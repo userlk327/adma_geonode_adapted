@@ -1,0 +1,124 @@
+<!-- ===== Ask ADMA floating chat widget ===== -->
+<style>
+  #askadma-fab {
+    position: fixed; bottom: 24px; right: 24px; z-index: 1050;
+    width: 60px; height: 60px; border-radius: 50%;
+    background: linear-gradient(135deg, #d00000, #9d0208);
+    color: #fff; border: none; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0,0,0,.25);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; transition: transform .15s ease, box-shadow .15s ease;
+  }
+  #askadma-fab:hover { transform: scale(1.08); box-shadow: 0 8px 26px rgba(0,0,0,.32); }
+
+  #askadma-window {
+    position: fixed; bottom: 96px; right: 24px; z-index: 1050;
+    width: 380px; max-width: calc(100vw - 48px);
+    height: 520px; max-height: calc(100vh - 140px);
+    background: #fff; border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.28);
+    display: none; flex-direction: column; overflow: hidden;
+    font-family: inherit;
+  }
+  #askadma-window.open { display: flex; animation: askadma-pop .18s ease; }
+  @keyframes askadma-pop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+  #askadma-header {
+    background: linear-gradient(135deg, #d00000, #9d0208);
+    color: #fff; padding: 14px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  #askadma-header .title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  #askadma-header .subtitle { font-size: 11px; opacity: .85; font-weight: 400; }
+  #askadma-close { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; line-height: 1; }
+
+  #askadma-messages {
+    flex: 1; padding: 16px; overflow-y: auto;
+    background: #f7f7f8; display: flex; flex-direction: column; gap: 10px;
+  }
+  .askadma-msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
+  .askadma-msg.user { align-self: flex-end; background: #d00000; color: #fff; border-bottom-right-radius: 4px; }
+  .askadma-msg.bot  { align-self: flex-start; background: #fff; color: #222; border: 1px solid #e5e5e5; border-bottom-left-radius: 4px; }
+  .askadma-msg.typing { color: #888; font-style: italic; }
+
+  #askadma-inputbar { padding: 12px; background: #fff; border-top: 1px solid #ececec; display: flex; gap: 8px; }
+  #askadma-text { flex: 1; border: 1px solid #ddd; border-radius: 20px; padding: 9px 14px; font-size: 14px; outline: none; }
+  #askadma-text:focus { border-color: #d00000; }
+  #askadma-send { border: none; background: #d00000; color: #fff; border-radius: 20px; padding: 0 18px; font-size: 14px; cursor: pointer; }
+  #askadma-send:disabled { opacity: .5; cursor: default; }
+</style>
+
+<button id="askadma-fab" title="Ask ADMA">&#129302;</button>
+
+<div id="askadma-window">
+  <div id="askadma-header">
+    <div>
+      <div class="title">&#129302; Ask ADMA</div>
+      <div class="subtitle">AI assistant for your data</div>
+    </div>
+    <button id="askadma-close" title="Close">&times;</button>
+  </div>
+  <div id="askadma-messages">
+    <div class="askadma-msg bot">Hi! Ask me anything about your data in ADMA.</div>
+  </div>
+  <div id="askadma-inputbar">
+    <input id="askadma-text" type="text" placeholder="Type your question..." />
+    <button id="askadma-send">Send</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  const fab = document.getElementById('askadma-fab');
+  const win = document.getElementById('askadma-window');
+  const closeBtn = document.getElementById('askadma-close');
+  const msgs = document.getElementById('askadma-messages');
+  const input = document.getElementById('askadma-text');
+  const send = document.getElementById('askadma-send');
+
+  function getCookie(name) {
+    const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
+  }
+  function addMsg(text, cls) {
+    const d = document.createElement('div');
+    d.className = 'askadma-msg ' + cls;
+    d.textContent = text;
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+    return d;
+  }
+
+  fab.addEventListener('click', () => { win.classList.toggle('open'); input.focus(); });
+  closeBtn.addEventListener('click', () => win.classList.remove('open'));
+
+  async function ask() {
+    const q = input.value.trim();
+    if (!q) return;
+    addMsg(q, 'user');
+    input.value = '';
+    send.disabled = true;
+    const typing = addMsg('Thinking...', 'bot typing');
+    try {
+      const resp = await fetch('/api/askadma/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify({ question: q })
+      });
+      const data = await resp.json();
+      typing.remove();
+      addMsg(data.answer || ('Error: ' + (data.error || 'no answer')), 'bot');
+    } catch (e) {
+      typing.remove();
+      addMsg('Request failed: ' + e, 'bot');
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  }
+
+  send.addEventListener('click', ask);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+})();
+</script>
+<!-- ===== end Ask ADMA widget ===== -->

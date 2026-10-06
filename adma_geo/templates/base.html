@@ -362,5 +362,8 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     
     {% block extra_js %}{% endblock %}
+    {% if user.is_authenticated %}
+    {% include 'filemanager/_askadma_widget.html' %}
+    {% endif %}
 </body>
 </html>
