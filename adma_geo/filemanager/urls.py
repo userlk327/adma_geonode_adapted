@@ -2,6 +2,7 @@ from django.urls import path
 from django.views.generic import RedirectView
 from . import views
 from . import map_views
+from . import askadma
 
 app_name = 'filemanager'
 
@@ -43,6 +44,7 @@ urlpatterns = [
     path('api/item/toggle-visibility/', views.toggle_visibility, name='toggle_visibility'),
     path('api/task/<str:task_id>/status/', views.check_deletion_status, name='check_deletion_status'),
     path('api/dashboard/stats/', views.dashboard_stats, name='dashboard_stats'),
+    path('api/askadma/', askadma.askadma_view, name='askadma'),
     path('api/search/', views.search_api, name='search_api'),
     
     # Seeding Tool endpoints

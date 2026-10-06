@@ -66,6 +66,8 @@ services:
       JD_CLIENT_SECRET: ${JD_CLIENT_SECRET}
       JD_REFRESH_TOKEN: ${JD_REFRESH_TOKEN}
       JD_ORG_ID: ${JD_ORG_ID}
+      # Anthropic API key for the askadma agent
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     depends_on:
       db:
         condition: service_healthy

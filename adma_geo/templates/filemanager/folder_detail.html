@@ -886,6 +886,29 @@
 </div>
 {% endif %}
 
+
+<!-- askadma: AI assistant panel -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-robot me-2"></i>Ask ADMA</h5>
+            </div>
+            <div class="card-body">
+                <div class="input-group mb-3">
+                    <input type="text" id="askadma-input" class="form-control"
+                           placeholder="Ask a question about your data..." />
+                    <button id="askadma-btn" class="btn btn-primary" type="button">Ask</button>
+                </div>
+                <div id="askadma-answer" class="p-3 bg-light rounded"
+                     style="min-height: 60px; white-space: pre-wrap;">
+                    <span class="text-muted">The answer will appear here.</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- end askadma panel -->
 {% endblock %}
 
 {% block extra_js %}
@@ -2477,4 +2500,52 @@ document.addEventListener('DOMContentLoaded', function() {
         </div>
     </div>
 </div>
+
+<script>
+// askadma: send question to the agent endpoint and show the answer
+(function () {
+    const btn = document.getElementById('askadma-btn');
+    const input = document.getElementById('askadma-input');
+    const answerBox = document.getElementById('askadma-answer');
+    if (!btn) return;
+
+    function getCookie(name) {
+        const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return v ? v.pop() : '';
+    }
+
+    async function ask() {
+        const question = input.value.trim();
+        if (!question) return;
+        answerBox.innerHTML = '<span class="text-muted">Thinking...</span>';
+        btn.disabled = true;
+        try {
+            const resp = await fetch('/api/askadma/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                body: JSON.stringify({ question: question })
+            });
+            const data = await resp.json();
+            if (data.answer) {
+                answerBox.textContent = data.answer;
+            } else {
+                answerBox.textContent = 'Error: ' + (data.error || 'no answer returned');
+            }
+        } catch (e) {
+            answerBox.textContent = 'Request failed: ' + e;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    btn.addEventListener('click', ask);
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') ask();
+    });
+})();
+</script>
+
 {% endblock %}
