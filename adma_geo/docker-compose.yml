@@ -68,6 +68,9 @@ services:
       JD_ORG_ID: ${JD_ORG_ID}
       # Anthropic API key for the askadma agent
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      NRP_API_KEY: ${NRP_API_KEY}
+      NRP_BASE_URL: ${NRP_BASE_URL}
+      AGENT_BACKEND: ${AGENT_BACKEND}
     depends_on:
       db:
         condition: service_healthy

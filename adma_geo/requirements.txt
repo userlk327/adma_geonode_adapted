@@ -31,3 +31,4 @@ xlrd>=2.0.1
 # Search now uses PostgreSQL text matching instead of semantic embeddings
 
 anthropic
+openai
