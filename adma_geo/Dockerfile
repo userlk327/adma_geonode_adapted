@@ -43,6 +43,10 @@ WORKDIR /app
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip uninstall -y opencv-python && pip install --no-cache-dir opencv-python-headless
+
+# ssh client: Ask ADMA runs jobs on HCC Swan through each user's own login
+RUN apt-get update && (apt-get install -y --no-install-recommends openssh-client || (sed -i '/debian-security/d' /etc/apt/sources.list && apt-get update && apt-get install -y --no-install-recommends openssh-client)) && rm -rf /var/lib/apt/lists/*
 
 # Copy project
 COPY . .

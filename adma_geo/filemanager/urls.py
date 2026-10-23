@@ -3,6 +3,8 @@ from django.views.generic import RedirectView
 from . import views
 from . import map_views
 from . import askadma
+from . import askadma_studio
+from . import askadma_swan
 
 app_name = 'filemanager'
 
@@ -45,6 +47,14 @@ urlpatterns = [
     path('api/task/<str:task_id>/status/', views.check_deletion_status, name='check_deletion_status'),
     path('api/dashboard/stats/', views.dashboard_stats, name='dashboard_stats'),
     path('api/askadma/', askadma.askadma_view, name='askadma'),
+    path('api/askadma/thumb/<uuid:file_id>/', askadma.askadma_thumb_view, name='askadma_thumb'),
+    path('api/askadma/studio/run/<str:run_id>/', askadma_studio.studio_run_view, name='askadma_studio_run'),
+    path('api/askadma/studio/save/', askadma_studio.studio_save_view, name='askadma_studio_save'),
+    path('api/askadma/studio/runs/', askadma_studio.studio_runs_view, name='askadma_studio_runs'),
+    path('api/askadma/studio/browse/', askadma_studio.studio_browse_view, name='askadma_studio_browse'),
+    path('api/askadma/swan/status/', askadma_swan.swan_status_view, name='askadma_swan_status'),
+    path('api/askadma/swan/connect/', askadma_swan.swan_connect_view, name='askadma_swan_connect'),
+    path('api/askadma/swan/disconnect/', askadma_swan.swan_disconnect_view, name='askadma_swan_disconnect'),
     path('api/search/', views.search_api, name='search_api'),
     
     # Seeding Tool endpoints

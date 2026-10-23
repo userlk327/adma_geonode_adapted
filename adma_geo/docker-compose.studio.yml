@@ -1,0 +1,42 @@
+# ADMA Studio overlay: a separate, locked-down container that runs users' Python
+# scripts, plus the work areas ADMA shares with it.
+#
+# Use together with the other compose files:
+#     docker compose -f docker-compose.yml -f docker-compose.adapt.yml -f docker-compose.studio.yml up -d
+#
+# The runner has no network, no ADMA secrets, a read-only root filesystem, runs as a
+# regular (non-root) user, and only sees /jobs (its work area) and the ADAPT share
+# read-only. ADMA copies the results into ADMA Studio folders after each run.
+
+services:
+  django:
+    volumes:
+      - adma_studio_jobs:/jobs
+      - adma_studio_runs:/studio_runs
+
+  studio-runner:
+    build:
+      context: ./studio_runner
+    container_name: adma_geo_studio_runner
+    network_mode: "none"
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 256
+    restart: unless-stopped
+    volumes:
+      - adma_studio_jobs:/jobs
+      - adma_geo_adapt:/adapt:ro
+
+volumes:
+  adma_studio_jobs:
+    driver: local
+  adma_studio_runs:
+    driver: local

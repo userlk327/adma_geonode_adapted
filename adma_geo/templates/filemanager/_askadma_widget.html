@@ -1,126 +1,1159 @@
-<!-- ===== Ask ADMA floating chat widget ===== -->
+<!-- ===== Ask ADMA side panel ===== -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-  #askadma-fab { position: fixed; bottom: 24px; right: 24px; z-index: 1050; width: 60px; height: 60px; border-radius: 50%; background: linear-gradient(135deg, #d00000, #9d0208); color: #fff; border: none; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; font-size: 24px; transition: transform .15s ease; }
-  #askadma-fab:hover { transform: scale(1.08); }
-  #askadma-window { position: fixed; bottom: 96px; right: 24px; z-index: 1050; width: 400px; max-width: calc(100vw - 48px); height: 560px; max-height: calc(100vh - 140px); background: #fff; border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.28); display: none; flex-direction: column; overflow: hidden; }
-  #askadma-window.open { display: flex; animation: askadma-pop .18s ease; }
-  @keyframes askadma-pop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-  #askadma-header { background: linear-gradient(135deg, #d00000, #9d0208); color: #fff; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; }
-  #askadma-header .title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  #askadma-header .subtitle { font-size: 11px; opacity: .85; }
-  #askadma-head-btns button { background: none; border: none; color: #fff; font-size: 18px; cursor: pointer; margin-left: 8px; }
-  #askadma-messages { flex: 1; padding: 16px; overflow-y: auto; background: #f7f7f8; display: flex; flex-direction: column; gap: 10px; }
-  .askadma-msg { max-width: 85%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
-  .askadma-msg.user { align-self: flex-end; background: #d00000; color: #fff; border-bottom-right-radius: 4px; }
-  .askadma-msg.bot { align-self: flex-start; background: #fff; color: #222; border: 1px solid #e5e5e5; border-bottom-left-radius: 4px; }
-  .askadma-msg.typing { color: #888; font-style: italic; }
-  .askadma-chart { align-self: stretch; background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; }
-  #askadma-inputbar { padding: 12px; background: #fff; border-top: 1px solid #ececec; display: flex; gap: 8px; }
-  #askadma-text { flex: 1; border: 1px solid #ddd; border-radius: 20px; padding: 9px 14px; font-size: 14px; outline: none; }
-  #askadma-text:focus { border-color: #d00000; }
-  #askadma-send { border: none; background: #d00000; color: #fff; border-radius: 20px; padding: 0 18px; font-size: 14px; cursor: pointer; }
-  #askadma-send:disabled { opacity: .5; }
+  :root { --askadma-w: 420px; --askadma-red: #d00000; --askadma-red-dark: #9d0208; --askadma-ink: #1f2622;
+          --askadma-muted: #66706a; --askadma-field: #f3f5f2; --askadma-line: #dfe3df; --askadma-amber: #ffb703; }
+  html.askadma-docked body { margin-right: var(--askadma-w); }
+  @media (prefers-reduced-motion: no-preference) { body { transition: margin-right .2s ease; } }
+
+  #askadma-fab { position: fixed; bottom: 24px; right: 24px; z-index: 1040; width: 56px; height: 56px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--askadma-red), var(--askadma-red-dark)); color: #fff; border: none; cursor: pointer;
+    box-shadow: 0 6px 18px rgba(157, 2, 8, .35); display: flex; align-items: center; justify-content: center; font-size: 22px; }
+  #askadma-fab[hidden] { display: none; }
+
+  #askadma-panel { position: fixed; top: 0; right: 0; bottom: 0; width: var(--askadma-w); z-index: 1040; background: #fff;
+    border-left: 1px solid var(--askadma-line); display: flex; flex-direction: column; color: var(--askadma-ink); font-size: 14px; }
+  #askadma-panel[hidden] { display: none; }
+  #askadma-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
+  #askadma-resize:hover, #askadma-resize.dragging { background: linear-gradient(90deg, transparent 3px, rgba(208,0,0,.45) 3px, rgba(208,0,0,.45) 5px, transparent 5px); }
+
+  #askadma-header { background: linear-gradient(135deg, var(--askadma-red), var(--askadma-red-dark)); color: #fff;
+    padding: 12px 12px 12px 16px; display: flex; align-items: center; gap: 10px; flex: none; }
+  #askadma-header .askadma-title { font-weight: 600; font-size: 15px; line-height: 1.2; }
+  #askadma-header .askadma-sub { font-size: 12px; opacity: .85; }
+  #askadma-header .askadma-head-btns { margin-left: auto; display: flex; gap: 4px; }
+  #askadma-header button { background: none; border: 1px solid transparent; color: #fff; width: 34px; height: 34px; border-radius: 6px; cursor: pointer; font-size: 15px; }
+  #askadma-header button:hover { border-color: rgba(255,255,255,.5); }
+
+  #askadma-messages { flex: 1; overflow-y: auto; padding: 16px 14px; background: var(--askadma-field); display: flex; flex-direction: column; gap: 12px; }
+  .askadma-msg { max-width: 92%; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .askadma-msg.user { align-self: flex-end; background: var(--askadma-red); color: #fff; padding: 8px 12px; border-radius: 12px 12px 3px 12px; }
+  .askadma-msg.bot { align-self: flex-start; background: #fff; border: 1px solid var(--askadma-line); padding: 10px 12px; border-radius: 3px 12px 12px 12px; }
+  .askadma-msg.note { align-self: center; color: var(--askadma-muted); font-size: 12px; }
+  .askadma-msg.bot code { background: var(--askadma-field); padding: 0 4px; border-radius: 3px; font-size: 13px; }
+  .askadma-msg.bot a { color: var(--askadma-red-dark); }
+
+  .askadma-turn { display: flex; flex-direction: column; gap: 8px; align-self: stretch; }
+  .askadma-steps { list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--askadma-muted); }
+  .askadma-steps li { padding: 1px 0 1px 18px; position: relative; }
+  .askadma-steps li::before { content: "\2713"; position: absolute; left: 2px; color: #2f7d4f; }
+  .askadma-steps li.now { color: var(--askadma-ink); }
+  .askadma-steps li.now::before { content: ""; left: 3px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--askadma-red); }
+  @media (prefers-reduced-motion: no-preference) { .askadma-steps li.now::before { animation: askadma-pulse 1s ease-in-out infinite; } }
+  @keyframes askadma-pulse { 50% { opacity: .25; } }
+  .askadma-steps .askadma-clock { font-variant-numeric: tabular-nums; margin-left: 6px; color: var(--askadma-muted); }
+  .askadma-live { border-left: 2px solid var(--askadma-red); padding: 2px 0 2px 10px; }
+  .askadma-live .askadma-steps { font-size: 13px; }
+  details.askadma-done-steps summary { font-size: 12px; color: var(--askadma-muted); cursor: pointer; width: fit-content; }
+
+  .askadma-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+  .askadma-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #f0c4c6; background: #fff; color: var(--askadma-red-dark);
+    border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; line-height: 1.3; text-align: left; }
+  .askadma-btn:hover { background: #fdecee; }
+  .askadma-btn i { font-size: 12px; opacity: .85; }
+
+  .askadma-chart { background: #fff; border: 1px solid var(--askadma-line); border-radius: 8px; padding: 10px; position: relative; height: 260px; }
+  .askadma-gallery { background: #fff; border: 1px solid var(--askadma-line); border-radius: 8px; padding: 10px; }
+  .askadma-gallery-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .askadma-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .askadma-tile { border: none; padding: 0; background: none; cursor: pointer; text-align: left; color: inherit; min-width: 0; }
+  .askadma-tile img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; background: var(--askadma-field); display: block; }
+  .askadma-tile .askadma-cap { font-size: 11px; color: var(--askadma-muted); line-height: 1.3; margin-top: 3px; overflow: hidden; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .askadma-tile:hover img { outline: 2px solid var(--askadma-amber); }
+  .askadma-more { margin-top: 8px; }
+  .askadma-photo { position: relative; border: none; padding: 0; background: none; cursor: zoom-in; display: block; width: 100%; }
+  .askadma-photo svg { width: 100%; height: auto; display: block; border-radius: 8px; background: #20262a; }
+
+  .askadma-run { background: #fff; border: 1px solid var(--askadma-line); border-left: 3px solid var(--askadma-amber); border-radius: 8px; padding: 10px 12px; }
+  .askadma-run.done { border-left-color: #2f7d4f; }
+  .askadma-run.failed { border-left-color: var(--askadma-red); }
+  .askadma-run h4 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+  .askadma-run dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 13px; }
+  .askadma-run dt { color: var(--askadma-muted); font-weight: normal; }
+  .askadma-run dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
+  .askadma-run-note { font-size: 12px; color: var(--askadma-muted); margin-bottom: 8px; line-height: 1.4; }
+  .askadma-run-state { font-size: 13px; margin: 2px 0 8px; }
+  .askadma-run-state:empty { display: none; }
+  .askadma-run pre { background: #1f2622; color: #e6ebe7; font-size: 11.5px; line-height: 1.45; padding: 8px 10px; border-radius: 6px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
+  .askadma-btn.primary { background: var(--askadma-red); color: #fff; border-color: var(--askadma-red); font-weight: 600; }
+  .askadma-btn.primary:hover { background: var(--askadma-red-dark); }
+  .askadma-btn:disabled { opacity: .55; cursor: default; }
+
+  #askadma-inputbar { flex: none; padding: 10px; border-top: 1px solid var(--askadma-line); display: flex; gap: 8px; align-items: flex-end; background: #fff; }
+  #askadma-text { flex: 1; resize: none; border: 1px solid #cfd5d0; border-radius: 8px; padding: 8px 10px; font: inherit; line-height: 1.4; max-height: 140px; outline: none; }
+  #askadma-text:focus { border-color: var(--askadma-red); box-shadow: 0 0 0 3px rgba(208,0,0,.12); }
+  #askadma-send { border: none; background: var(--askadma-red); color: #fff; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+  #askadma-send:disabled { opacity: .5; cursor: default; }
+  #askadma-panel button:focus-visible, #askadma-fab:focus-visible, #askadma-viewer button:focus-visible, #askadma-viewer a:focus-visible { outline: 3px solid var(--askadma-amber); outline-offset: 2px; }
+
+  #askadma-viewer { position: fixed; inset: 0; z-index: 1060; background: rgba(16, 20, 18, .94); display: flex; flex-direction: column; color: #fff; }
+  #askadma-viewer[hidden] { display: none; }
+  #askadma-viewer .askadma-vbar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+  #askadma-viewer .askadma-vname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #askadma-viewer .askadma-vinfo { color: #c9d1cc; font-size: 13px; }
+  #askadma-viewer .askadma-vbar a { color: #fff; border: 1px solid rgba(255,255,255,.4); border-radius: 6px; padding: 4px 10px; text-decoration: none; font-size: 13px; white-space: nowrap; }
+  #askadma-viewer .askadma-vbar button, #askadma-viewer .askadma-nav { background: none; border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 6px; cursor: pointer; }
+  #askadma-viewer .askadma-vbar button { width: 34px; height: 34px; margin-left: auto; flex: none; }
+  #askadma-viewer .askadma-vstage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 0 12px 14px; }
+  #askadma-viewer svg { max-width: 100%; max-height: 100%; width: auto; height: 100%; }
+  #askadma-viewer .askadma-nav { width: 40px; height: 64px; font-size: 18px; flex: none; }
+  #askadma-viewer .askadma-nav[hidden] { visibility: hidden; display: block; }
+
+
+  .askadma-run2 { background: #fff; border: 1px solid var(--askadma-line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .askadma-run2.done { box-shadow: inset 0 3px 0 #2f7d4f; }
+  .askadma-run2.failed { box-shadow: inset 0 3px 0 var(--askadma-red); }
+  .askadma-rhead { display: flex; align-items: center; gap: 8px; }
+  .askadma-rhead h4 { flex: 1; min-width: 0; margin: 0; font-size: 14.5px; font-weight: 700; overflow-wrap: anywhere; }
+  .askadma-pill { border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 700; background: #eef0ed; color: #3b443f; white-space: nowrap; }
+  .askadma-pill.busy { background: #fff4d6; color: #5c4300; } .askadma-pill.ok { background: #e3f3e8; color: #1f5f39; } .askadma-pill.bad { background: #fdecee; color: #9d0208; }
+  .askadma-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--askadma-muted); text-transform: uppercase; }
+  .askadma-where { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .askadma-where button { text-align: left; border: 1px solid var(--askadma-line); background: #fff; border-radius: 10px; padding: 9px 10px; cursor: pointer; font: inherit; color: inherit; display: flex; flex-direction: column; gap: 2px; min-height: 44px; }
+  .askadma-where button[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--askadma-red); background: #fff6f6; }
+  .askadma-where b { font-size: 13.5px; } .askadma-where span { font-size: 12px; color: var(--askadma-muted); }
+  .askadma-items { list-style: none; margin: 0; padding: 0; border: 1px solid var(--askadma-line); border-radius: 10px; overflow: hidden; }
+  .askadma-items li { display: flex; align-items: center; gap: 8px; padding: 7px 4px 7px 10px; border-bottom: 1px solid #eceeeb; }
+  .askadma-items li:last-child { border-bottom: none; }
+  .askadma-items .fa-folder { color: #e0a000; } .askadma-items .fa-file, .askadma-items .fa-file-code { color: var(--askadma-muted); }
+  .askadma-ip { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; } .askadma-im { font-size: 12px; color: var(--askadma-muted); }
+  .askadma-items button { border: none; background: none; width: 36px; height: 36px; cursor: pointer; color: var(--askadma-muted); border-radius: 6px; flex: none; }
+  .askadma-items button:hover { background: var(--askadma-field); color: var(--askadma-red-dark); }
+  .askadma-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; font-size: 12.5px; margin: 0; }
+  .askadma-kv dt { color: var(--askadma-muted); font-weight: normal; } .askadma-kv dd { margin: 0; overflow-wrap: anywhere; }
+  .askadma-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .askadma-opts label { font-size: 12px; color: var(--askadma-muted); display: flex; flex-direction: column; gap: 3px; }
+  .askadma-opts select, .askadma-opts textarea { font: inherit; font-size: 13px; border: 1px solid #cfd5d0; border-radius: 7px; padding: 6px 8px; background: #fff; color: var(--askadma-ink); }
+  .askadma-opts textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; resize: vertical; }
+  .askadma-opts .askadma-wide { grid-column: 1 / -1; }
+  .askadma-conn { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; }
+  .askadma-dot { width: 9px; height: 9px; border-radius: 50%; background: #c9d1cc; flex: none; }
+  .askadma-dot.on { background: #2f9e5b; box-shadow: 0 0 0 3px rgba(47,158,91,.18); }
+  .askadma-warn { border: 1px solid #f3dc9b; background: #fff8e6; border-radius: 10px; padding: 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 8px; line-height: 1.45; }
+  .askadma-warn b { color: #5c4300; font-size: 13.5px; }
+  .askadma-prog { list-style: none; margin: 0; padding: 0; }
+  .askadma-prog li { display: flex; gap: 10px; padding-bottom: 10px; position: relative; }
+  .askadma-prog li:not(:last-child)::after { content: ""; position: absolute; left: 9px; top: 22px; bottom: 2px; width: 2px; background: var(--askadma-line); }
+  .askadma-prog li.done:not(:last-child)::after { background: #2f7d4f; }
+  .askadma-pi { width: 20px; height: 20px; border-radius: 50%; flex: none; border: 2px solid #c9d1cc; background: #fff; box-sizing: border-box; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; }
+  .askadma-prog li.done .askadma-pi { background: #2f7d4f; border-color: #2f7d4f; }
+  .askadma-prog li.now .askadma-pi { border-color: #b07d00; border-top-color: transparent; animation: askadma-spin .9s linear infinite; }
+  .askadma-prog li.stop .askadma-pi { background: var(--askadma-red); border-color: var(--askadma-red); }
+  @keyframes askadma-spin { to { transform: rotate(360deg); } }
+  .askadma-pt { font-size: 13px; font-weight: 700; } .askadma-prog li.wait .askadma-pt { color: var(--askadma-muted); }
+  .askadma-pd { font-size: 12px; color: #4d5650; overflow-wrap: anywhere; }
+  .askadma-bar { height: 5px; border-radius: 5px; background: #eceeeb; overflow: hidden; margin-top: 4px; }
+  .askadma-bar i { display: block; height: 5px; background: #b07d00; border-radius: 5px; width: 0; transition: width .4s; }
+  .askadma-run2 pre { background: #1f2622; color: #e6ebe7; font-size: 11.5px; line-height: 1.45; padding: 8px 10px; border-radius: 6px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 6px 0 0; }
+  #askadma-header .askadma-swanbar { display: flex; align-items: center; gap: 6px; font-size: 11.5px; margin-top: 3px; flex-wrap: wrap; }
+  #askadma-header .askadma-swanbar[hidden] { display: none; }
+  #askadma-header .askadma-swanbar .askadma-dot { background: rgba(255,255,255,.55); }
+  #askadma-header .askadma-swanbar .askadma-dot.on { background: #8ff0b6; box-shadow: 0 0 0 3px rgba(143,240,182,.25); }
+  #askadma-header button.askadma-linkbtn { width: auto; height: auto; padding: 0 2px; border: none; background: none; color: #fff; text-decoration: underline; font-size: 11.5px; cursor: pointer; }
+  .askadma-runs { background: #fff; border: 1px solid var(--askadma-line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .askadma-runrow { border: 1px solid #eceeeb; border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .askadma-runrow .askadma-rhead b { flex: 1; min-width: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+  .askadma-runrow .askadma-pd { font-size: 12px; }
+  .askadma-iconbtn { border: 1px solid var(--askadma-line); background: #fff; width: 32px; height: 32px; border-radius: 8px; cursor: pointer; color: var(--askadma-muted); flex: none; }
+  .askadma-iconbtn:hover { color: var(--askadma-red-dark); }
+  .askadma-items .askadma-addrow { padding: 0; }
+  .askadma-items .askadma-addrow button { width: 100%; height: auto; min-height: 40px; border-radius: 0; color: var(--askadma-red-dark); font: inherit; font-size: 13.5px; font-weight: 700; text-align: left; padding: 0 10px; }
+  .askadma-picker { border: 1px solid #c9d1cc; border-radius: 10px; padding: 8px; background: #fbfcfa; display: flex; flex-direction: column; gap: 6px; }
+  .askadma-pkhead { display: flex; align-items: center; gap: 6px; }
+  .askadma-pkpath { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+  .askadma-picker input[type=search] { font: inherit; font-size: 13px; border: 1px solid #cfd5d0; border-radius: 7px; padding: 6px 8px; }
+  .askadma-pklist { max-height: 260px; overflow: auto; background: #fff; }
+  .askadma-pklist li { padding: 3px 4px 3px 8px; }
+  .askadma-pklist input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--askadma-red); flex: none; margin: 0; }
+  .askadma-items button.askadma-pkopen { width: auto; height: auto; border: none; background: none; padding: 0; font: inherit; font-size: 13px; font-weight: 600; color: var(--askadma-red-dark); cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+  .askadma-items button.askadma-pkopen:hover { background: none; text-decoration: underline; }
+  .askadma-previews .askadma-tile img { aspect-ratio: 4 / 3; object-fit: contain; background: #f3f5f2; border: 1px solid var(--askadma-line); }
+  .askadma-hint { border: 1px solid #f3dc9b; background: #fff8e6; border-radius: 10px; padding: 10px; font-size: 12.5px; line-height: 1.45; display: flex; flex-direction: column; gap: 6px; }
+  .askadma-hint b { color: #5c4300; font-size: 13.5px; }
+  .askadma-cmd { display: flex; align-items: center; gap: 8px; }
+  .askadma-cmd code { flex: 1; min-width: 0; background: #1f2622; color: #e6ebe7; border-radius: 6px; padding: 6px 8px; font-size: 12px; overflow-wrap: anywhere; }
+  .askadma-run2 details.askadma-log summary { font-size: 12px; color: var(--askadma-muted); cursor: pointer; width: fit-content; }
+  .askadma-err { color: var(--askadma-red-dark); font-weight: 600; }
+  .askadma-run2 a.askadma-link { color: var(--askadma-red-dark); font-weight: 600; }
+  /* ADMA Studio identity: ADMA's seedling in a red badge (used on folder pages and in the chat panel) */
+  .adma-studio-badge { display: inline-flex; align-items: center; justify-content: center; background: #c80000; color: #fff; border-radius: 6px; vertical-align: middle; flex: none; line-height: 1; }
+  .adma-studio-badge .fas { color: #fff; }
+  .adma-studio-badge-lg { width: 44px; height: 44px; font-size: 22px; border-radius: 11px; box-shadow: inset 0 -2px 0 rgba(0,0,0,.18); }
+  .adma-studio-badge-md { width: 28px; height: 28px; font-size: 14px; border-radius: 7px; }
+  .adma-studio-badge-sm { width: 20px; height: 20px; font-size: 10px; border-radius: 6px; border: 2px solid #fff; box-sizing: border-box; }
+  .adma-studio-badge-xs { width: 18px; height: 18px; font-size: 10px; border-radius: 5px; }
+  .adma-studio-folder { position: relative; display: inline-block; }
+  .adma-studio-folder .adma-studio-badge-sm { position: absolute; right: -7px; bottom: -3px; }
+  .adma-studio-title { display: inline-flex; flex-direction: column; vertical-align: middle; line-height: 1.12; }
+  .adma-studio-eyebrow { font-size: .5em; font-weight: 400; letter-spacing: .4px; color: #4d5650; }
+  .adma-studio-eyebrow b, .adma-studio-lockup b { color: #c80000; font-weight: 800; }
+  .adma-studio-lockup { font-weight: 400; vertical-align: middle; }
+  .adma-studio-card { box-shadow: 0 0 0 2px #c80000 !important; }
+  .askadma-eyebrow { font-size: 10.5px; font-weight: 700; letter-spacing: 1px; color: #b00000; line-height: 1.2; }
+  #askadma-swan { position: fixed; inset: 0; z-index: 1070; background: rgba(16,20,18,.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #askadma-swan[hidden] { display: none; }
+  .askadma-sbox { width: 420px; max-width: 100%; max-height: 100%; overflow: auto; box-sizing: border-box; background: #fff; border-radius: 14px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.5); padding: 18px; display: flex; flex-direction: column; gap: 12px; color: var(--askadma-ink); font-size: 14px; }
+  .askadma-sbox h3 { margin: 0; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .askadma-sbox label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+  .askadma-sbox label.askadma-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 500; }
+  .askadma-sbox input[type=text], .askadma-sbox input[type=password], .askadma-sbox select { font: inherit; height: 40px; border: 1px solid #c9d1cc; border-radius: 8px; padding: 0 10px; background: #fff; }
+  .askadma-snote { font-size: 12.5px; color: var(--askadma-muted); line-height: 1.45; margin: 0; }
+  .askadma-serr { color: var(--askadma-red-dark); font-size: 13px; margin: 0; }
+  .askadma-serr:empty { display: none; }
+  .askadma-sbtns { display: flex; justify-content: flex-end; gap: 8px; }
+  .askadma-duo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 6px 0; }
+  .askadma-duo .fas { font-size: 40px; color: #2f7d4f; }
+  @media (prefers-reduced-motion: reduce) { .askadma-prog li.now .askadma-pi { animation: none; } }
+  .askadma-hl { outline: 3px solid var(--askadma-amber) !important; outline-offset: 2px; border-radius: 6px; background: #fff7df !important; }
+
+  @media (max-width: 767.98px) {
+    html.askadma-docked body { margin-right: 0; }
+    #askadma-panel { width: 100vw; }
+    #askadma-resize { display: none; }
+    .askadma-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
 </style>
 
-<button id="askadma-fab" title="Ask ADMA">&#129302;</button>
-<div id="askadma-window">
+<button id="askadma-fab" type="button" title="Ask ADMA" aria-label="Open Ask ADMA"><i class="fas fa-robot"></i></button>
+<aside id="askadma-panel" aria-label="Ask ADMA" hidden>
+  <div id="askadma-resize" title="Drag to resize"></div>
   <div id="askadma-header">
-    <div><div class="title">&#129302; Ask ADMA</div><div class="subtitle">AI assistant for your data</div></div>
-    <div id="askadma-head-btns"><button id="askadma-clear" title="New chat">&#128465;</button><button id="askadma-close" title="Close">&times;</button></div>
+    <div><div class="askadma-title">Ask ADMA</div><div class="askadma-sub">Search, look at and analyze your data</div>
+      <div id="askadma-swanbar" class="askadma-swanbar" hidden></div></div>
+    <div class="askadma-head-btns">
+      <button id="askadma-runs" type="button" title="My runs" aria-label="My runs"><i class="fas fa-tasks"></i></button>
+      <button id="askadma-clear" type="button" title="New conversation" aria-label="New conversation"><i class="fas fa-plus"></i></button>
+      <button id="askadma-close" type="button" title="Close panel" aria-label="Close panel"><i class="fas fa-times"></i></button>
+    </div>
   </div>
-  <div id="askadma-messages"></div>
-  <div id="askadma-inputbar">
-    <input id="askadma-text" type="text" placeholder="Type your question..." />
-    <button id="askadma-send">Send</button>
+  <div id="askadma-messages" aria-live="polite"></div>
+  <form id="askadma-inputbar">
+    <textarea id="askadma-text" rows="1" placeholder="Ask about your files, photos or data" aria-label="Message"></textarea>
+    <button id="askadma-send" type="submit">Send</button>
+  </form>
+</aside>
+<div id="askadma-viewer" role="dialog" aria-modal="true" aria-label="Photo viewer" hidden>
+  <div class="askadma-vbar">
+    <span class="askadma-vname"></span><span class="askadma-vinfo"></span>
+    <a class="askadma-vopen" href="#">Open file page</a>
+    <button type="button" class="askadma-vclose" aria-label="Close viewer"><i class="fas fa-times"></i></button>
+  </div>
+  <div class="askadma-vstage">
+    <button type="button" class="askadma-nav askadma-prev" aria-label="Previous photo"><i class="fas fa-chevron-left"></i></button>
+    <div class="askadma-vimg" style="flex:1;min-width:0;height:100%;display:flex;align-items:center;justify-content:center"></div>
+    <button type="button" class="askadma-nav askadma-next" aria-label="Next photo"><i class="fas fa-chevron-right"></i></button>
   </div>
 </div>
 
 <script>
 (function () {
-  const fab = document.getElementById('askadma-fab');
-  const win = document.getElementById('askadma-window');
-  const closeBtn = document.getElementById('askadma-close');
-  const clearBtn = document.getElementById('askadma-clear');
-  const msgs = document.getElementById('askadma-messages');
-  const input = document.getElementById('askadma-text');
-  const send = document.getElementById('askadma-send');
-  const STORE = 'askadma_conversation';
+  const $ = (id) => document.getElementById(id);
+  const fab = $('askadma-fab'), panel = $('askadma-panel'), msgs = $('askadma-messages');
+  const form = $('askadma-inputbar'), input = $('askadma-text'), send = $('askadma-send');
+  const viewer = $('askadma-viewer');
+  const STORE = 'askadma_conversation', OPEN = 'askadma_open', WIDTH = 'askadma_width', PENDING = 'askadma_pending';
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SVGNS = 'http://www.w3.org/2000/svg';
 
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    sget(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+    sset(k, v) { try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) {} }
+  };
   let conversation = [];
-  try { conversation = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch (e) { conversation = []; }
-
+  try { conversation = JSON.parse(store.get(STORE, '[]')) || []; } catch (e) { conversation = []; }
+  function save() { store.set(STORE, JSON.stringify(conversation.slice(-30))); }
   function getCookie(name) {
     const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
     return v ? v.pop() : '';
   }
-  function saveConv() { try { localStorage.setItem(STORE, JSON.stringify(conversation.slice(-24))); } catch (e) {} }
-
-  function addMsgEl(text, cls) {
-    const d = document.createElement('div');
-    d.className = 'askadma-msg ' + cls;
-    d.textContent = text;
-    msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
-    return d;
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
   }
-  function addChart(action) {
-    const wrap = document.createElement('div');
-    wrap.className = 'askadma-chart';
-    const canvas = document.createElement('canvas');
-    wrap.appendChild(canvas); msgs.appendChild(wrap); msgs.scrollTop = msgs.scrollHeight;
-    new Chart(canvas, {
-      type: action.chart_type === 'pie' ? 'pie' : (action.chart_type === 'line' ? 'line' : 'bar'),
-      data: { labels: action.labels, datasets: [{ label: action.y_label || '', data: action.values,
-        backgroundColor: action.chart_type === 'pie' ? undefined : 'rgba(208,0,0,.6)',
-        borderColor: '#d00000', borderWidth: 1 }] },
-      options: { plugins: { title: { display: !!action.title, text: action.title } } }
+  function icon(name) { const i = el('i', 'fas ' + (name || 'fa-arrow-right')); i.setAttribute('aria-hidden', 'true'); return i; }
+
+  // ---------- panel: open, close, resize ----------
+  function setWidth(w) {
+    const max = Math.min(760, Math.round(window.innerWidth * 0.6));
+    w = Math.max(320, Math.min(max, Math.round(w)));
+    document.documentElement.style.setProperty('--askadma-w', w + 'px');
+    return w;
+  }
+  setWidth(parseInt(store.get(WIDTH, '420'), 10) || 420);
+  function openPanel(focus) {
+    panel.hidden = false; fab.hidden = true;
+    document.documentElement.classList.add('askadma-docked');
+    store.set(OPEN, '1');
+    msgs.scrollTop = msgs.scrollHeight;
+    if (focus) input.focus();
+    setTimeout(refreshSwanBar, 0);
+  }
+  function closePanel() {
+    panel.hidden = true; fab.hidden = false;
+    document.documentElement.classList.remove('askadma-docked');
+    store.set(OPEN, '0');
+    fab.focus();
+  }
+  fab.addEventListener('click', () => openPanel(true));
+  $('askadma-close').addEventListener('click', closePanel);
+  $('askadma-clear').addEventListener('click', () => { conversation = []; save(); renderAll(); input.focus(); });
+  $('askadma-runs').addEventListener('click', () => runAction({ type: 'show_runs' }, true));
+  setInterval(() => { if (!panel.hidden && !document.hidden) refreshSwanBar(); }, 60000);
+  (function resizer() {
+    const handle = $('askadma-resize');
+    let dragging = false;
+    handle.addEventListener('pointerdown', (e) => { dragging = true; handle.classList.add('dragging'); handle.setPointerCapture(e.pointerId); e.preventDefault(); });
+    handle.addEventListener('pointermove', (e) => { if (dragging) setWidth(window.innerWidth - e.clientX); });
+    handle.addEventListener('pointerup', (e) => {
+      if (!dragging) return;
+      dragging = false; handle.classList.remove('dragging');
+      store.set(WIDTH, String(setWidth(window.innerWidth - e.clientX)));
+    });
+  })();
+
+  // ---------- text ----------
+  function renderText(target, text) {
+    // Plain text with **bold**, `code`, [links](/relative or https://...) and "- " bullets; no raw HTML.
+    const lines = String(text || '').split('\n');
+    lines.forEach((line, n) => {
+      if (n) target.appendChild(document.createTextNode('\n'));
+      line = line.replace(/^#{1,6}\s+(.*)$/, '**$1**').replace(/^\s*[-*]\s+/, '• ');
+      const re = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(((?:https?:\/\/|\/)[^)\s]+)\))/g;
+      let last = 0, m;
+      while ((m = re.exec(line))) {
+        if (m.index > last) target.appendChild(document.createTextNode(line.slice(last, m.index)));
+        if (m[2]) target.appendChild(el('strong', '', m[2]));
+        else if (m[3]) target.appendChild(el('code', '', m[3]));
+        else { const a = el('a', '', m[4]); a.href = m[5]; if (/^https?:/.test(m[5])) { a.target = '_blank'; a.rel = 'noopener'; } target.appendChild(a); }
+        last = re.lastIndex;
+      }
+      if (last < line.length) target.appendChild(document.createTextNode(line.slice(last)));
     });
   }
 
-  function renderAll() {
-    msgs.innerHTML = '';
-    if (conversation.length === 0) { addMsgEl('Hi! Ask me anything about your data in ADMA.', 'bot'); return; }
-    conversation.forEach(m => addMsgEl(m.content, m.role === 'user' ? 'user' : 'bot'));
+  // ---------- charts, galleries, photos ----------
+  function addChart(parent, action) {
+    if (typeof Chart === 'undefined') { parent.appendChild(el('div', 'askadma-msg note', 'Charts need the Chart.js script, which did not load.')); return; }
+    const wrap = el('div', 'askadma-chart');
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas); parent.appendChild(wrap);
+    const kind = ['pie', 'line', 'scatter'].includes(action.chart_type) ? action.chart_type : 'bar';
+    const colors = ['#d00000', '#1f77b4', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b'];
+    const series = (action.datasets && action.datasets.length) ? action.datasets : [{ label: action.y_label || '', data: action.values || [] }];
+    const datasets = series.map((s, i) => {
+      if (kind === 'pie') return { label: s.label, data: s.data };
+      const c = colors[i % colors.length];
+      return { label: s.label, data: s.data, borderColor: c, borderWidth: kind === 'bar' ? 1 : 2,
+               backgroundColor: kind === 'bar' ? c + '99' : c, fill: false, spanGaps: true,
+               pointRadius: (kind === 'line' && s.data.length > 60) ? 0 : 3 };
+    });
+    new Chart(canvas, {
+      type: kind,
+      data: kind === 'scatter' ? { datasets } : { labels: action.labels || [], datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: reduceMotion ? false : undefined,
+        plugins: { title: { display: !!action.title, text: action.title }, legend: { display: kind === 'pie' || datasets.length > 1 } },
+        scales: kind === 'pie' ? {} : { x: { title: { display: !!action.x_label, text: action.x_label } },
+                                        y: { title: { display: !!action.y_label, text: action.y_label } } }
+      }
+    });
   }
-  renderAll();
 
-  fab.addEventListener('click', () => { win.classList.toggle('open'); input.focus(); });
-  closeBtn.addEventListener('click', () => win.classList.remove('open'));
-  clearBtn.addEventListener('click', () => { conversation = []; saveConv(); renderAll(); });
+  function photoSvg(src, width, height, boxes, compact) {
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('role', 'img');
+    const img = document.createElementNS(SVGNS, 'image');
+    img.setAttribute('href', src); img.setAttribute('width', width); img.setAttribute('height', height);
+    img.setAttribute('preserveAspectRatio', 'none');
+    svg.appendChild(img);
+    const stroke = Math.max(2, width / 300), fs = Math.max(12, width / 55);
+    (boxes || []).forEach((b) => {
+      const [x1, y1, x2, y2] = b.box;
+      const r = document.createElementNS(SVGNS, 'rect');
+      r.setAttribute('x', x1); r.setAttribute('y', y1); r.setAttribute('width', x2 - x1); r.setAttribute('height', y2 - y1);
+      r.setAttribute('fill', 'none'); r.setAttribute('stroke', '#ffb703'); r.setAttribute('stroke-width', stroke);
+      svg.appendChild(r);
+      if (compact) return;
+      const text = `${b.label} ${Math.round((b.confidence || 0) * 100)}%`;
+      const tw = text.length * fs * 0.58 + fs * 0.6, th = fs * 1.35;
+      const ty = y1 - th >= 0 ? y1 - th : y1;
+      const bg = document.createElementNS(SVGNS, 'rect');
+      bg.setAttribute('x', x1); bg.setAttribute('y', ty); bg.setAttribute('width', tw); bg.setAttribute('height', th); bg.setAttribute('fill', '#ffb703');
+      const t = document.createElementNS(SVGNS, 'text');
+      t.setAttribute('x', x1 + fs * 0.3); t.setAttribute('y', ty + fs * 1.02); t.setAttribute('font-size', fs);
+      t.setAttribute('font-family', 'system-ui, sans-serif'); t.setAttribute('font-weight', '600'); t.setAttribute('fill', '#1f2622');
+      t.textContent = text;
+      svg.appendChild(bg); svg.appendChild(t);
+    });
+    const counts = {};
+    (boxes || []).forEach((b) => { counts[b.label] = (counts[b.label] || 0) + 1; });
+    const summary = Object.keys(counts).map((k) => `${counts[k]} ${k}`).join(', ');
+    svg.setAttribute('aria-label', summary ? `Photo with ${summary}` : 'Photo');
+    return svg;
+  }
 
-  async function ask() {
-    const q = input.value.trim();
-    if (!q) return;
-    conversation.push({ role: 'user', content: q });
-    addMsgEl(q, 'user'); saveConv();
-    input.value = ''; send.disabled = true;
-    const typing = addMsgEl('Thinking...', 'bot typing');
+  function addPhoto(parent, action) {
+    const b = el('button', 'askadma-photo'); b.type = 'button'; b.title = 'Open full size';
+    const w = action.width || 1600, h = action.height || 1200;
+    b.appendChild(photoSvg(action.image, w, h, action.boxes, true));
+    b.addEventListener('click', () => openViewer([action], 0));
+    parent.appendChild(b);
+  }
+
+  function addGallery(parent, action) {
+    const items = action.items || [];
+    const box = el('div', 'askadma-gallery');
+    box.appendChild(el('div', 'askadma-gallery-title', action.title || `${items.length} photos`));
+    const grid = el('div', 'askadma-grid');
+    const SHOW = 12;
+    items.forEach((it, i) => {
+      const t = el('button', 'askadma-tile'); t.type = 'button'; t.title = it.name;
+      if (i >= SHOW) t.hidden = true;
+      const img = document.createElement('img'); img.loading = 'lazy'; img.alt = it.name; img.src = it.thumb;
+      t.appendChild(img);
+      t.appendChild(el('div', 'askadma-cap', it.caption || it.name));
+      t.addEventListener('click', () => openViewer(items.map(galleryToPhoto), i));
+      grid.appendChild(t);
+    });
+    box.appendChild(grid);
+    if (items.length > SHOW) {
+      const more = el('button', 'askadma-btn askadma-more', `Show all ${items.length}`); more.type = 'button';
+      more.addEventListener('click', () => { grid.querySelectorAll('.askadma-tile').forEach((t) => { t.hidden = false; }); more.remove(); });
+      box.appendChild(more);
+    }
+    parent.appendChild(box);
+  }
+  function galleryToPhoto(it) {
+    const p = { type: 'show_detections', file_id: it.id, name: it.name, url: it.url, image: it.image, boxes: it.boxes || [], caption: it.caption };
+    if (it.size) { p.width = it.size[0]; p.height = it.size[1]; }
+    return p;
+  }
+
+  // ---------- full-screen photo viewer ----------
+  let vList = [], vIndex = 0, vReturnFocus = null;
+  const vImg = viewer.querySelector('.askadma-vimg'), vPrev = viewer.querySelector('.askadma-prev'), vNext = viewer.querySelector('.askadma-next');
+  function showViewerPhoto() {
+    const p = vList[vIndex];
+    viewer.querySelector('.askadma-vname').textContent = p.name || '';
+    const counts = {};
+    (p.boxes || []).forEach((b) => { counts[b.label] = (counts[b.label] || 0) + 1; });
+    const info = Object.keys(counts).map((k) => `${counts[k]} ${k}`).join(', ');
+    viewer.querySelector('.askadma-vinfo').textContent = [info, vList.length > 1 ? `${vIndex + 1} of ${vList.length}` : ''].filter(Boolean).join('  |  ');
+    const open = viewer.querySelector('.askadma-vopen'); open.href = p.url || '#'; open.hidden = !p.url;
+    vPrev.hidden = vIndex <= 0; vNext.hidden = vIndex >= vList.length - 1;
+    vImg.textContent = '';
+    const draw = (w, h) => { vImg.textContent = ''; vImg.appendChild(photoSvg(p.image, w, h, p.boxes, false)); };
+    if (p.width && p.height) draw(p.width, p.height);
+    else { const probe = new Image(); probe.onload = () => draw(probe.naturalWidth, probe.naturalHeight); probe.onerror = () => { vImg.textContent = 'Could not load this photo.'; }; probe.src = p.image; }
+  }
+  function openViewer(list, index) {
+    vList = list; vIndex = index || 0; vReturnFocus = document.activeElement;
+    viewer.hidden = false; showViewerPhoto();
+    viewer.querySelector('.askadma-vclose').focus();
+  }
+  function closeViewer() { viewer.hidden = true; vImg.textContent = ''; if (vReturnFocus && vReturnFocus.focus) vReturnFocus.focus(); }
+  viewer.querySelector('.askadma-vclose').addEventListener('click', closeViewer);
+  vPrev.addEventListener('click', () => { if (vIndex > 0) { vIndex--; showViewerPhoto(); } });
+  vNext.addEventListener('click', () => { if (vIndex < vList.length - 1) { vIndex++; showViewerPhoto(); } });
+  viewer.addEventListener('click', (e) => { if (e.target === viewer || e.target.classList.contains('askadma-vstage')) closeViewer(); });
+  document.addEventListener('keydown', (e) => {
+    if (viewer.hidden) return;
+    if (e.key === 'Escape') closeViewer();
+    else if (e.key === 'ArrowLeft') vPrev.click();
+    else if (e.key === 'ArrowRight') vNext.click();
+  });
+
+  // ---------- page control ----------
+  function samePage(url) {
+    const u = new URL(url, location.href);
+    return u.pathname === location.pathname && (u.search || '') === (location.search || '');
+  }
+  function highlight(id) {
+    const all = Array.from(document.querySelectorAll(`[data-file-id="${CSS.escape(id)}"], [data-folder-id="${CSS.escape(id)}"]`));
+    const target = all.find((n) => n.offsetParent !== null) || all[0];
+    if (!target) { addNote('I could not find that item on this page.'); return false; }
+    target.classList.add('askadma-hl');
+    target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    setTimeout(() => target.classList.remove('askadma-hl'), 8000);
+    return true;
+  }
+  // ---------- ADMA Studio: script runs and saved reports ----------
+  async function studioRequest(url, method, body) {
+    let data = {};
+    try {
+      const r = await fetch(url, { method, credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: body ? JSON.stringify(body) : undefined });
+      try { data = await r.json(); } catch (e) { data = {}; }
+      if (!r.ok && !data.status) data = Object.assign({}, data, { error: data.error || `the server answered ${r.status}` });
+    } catch (e) { data = { error: (e && e.message) || String(e) }; }
+    return data;
+  }
+  function smallButton(label, iconName, cls, onClick) {
+    const b = el('button', 'askadma-btn' + (cls ? ' ' + cls : '')); b.type = 'button';
+    b.appendChild(icon(iconName)); b.appendChild(document.createTextNode(label));
+    b.addEventListener('click', onClick);
+    return b;
+  }
+  function studioBadge(size) {
+    const b = el('span', 'adma-studio-badge adma-studio-badge-' + (size || 'md')); b.setAttribute('aria-hidden', 'true');
+    b.appendChild(icon('fa-seedling'));
+    return b;
+  }
+  // Studio folder cards on folder pages: outline the card around a Studio folder icon
+  function markStudioCards() {
+    document.querySelectorAll('.adma-studio-folder').forEach((w) => {
+      let n = w.parentElement;
+      for (let i = 0; n && i < 5; i++, n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        if ((parseFloat(cs.borderTopWidth) > 0 || cs.boxShadow !== 'none') && n.getBoundingClientRect().width < 700) {
+          n.classList.add('adma-studio-card'); break;
+        }
+      }
+    });
+  }
+  function humanSize(n) {
+    n = Number(n) || 0;
+    const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(n >= 100 ? 0 : 1)) + ' ' + u[i];
+  }
+  // ---------- HCC Swan: connect with password + Duo ----------
+  let swanState = null;
+  async function swanStatus() { swanState = await studioRequest('/api/askadma/swan/status/', 'GET'); return swanState; }
+  async function refreshSwanBar() {
+    const bar = $('askadma-swanbar');
+    if (!bar) return;
+    const st = await swanStatus();
+    bar.textContent = '';
+    if (!st || !st.available || (!st.connected && (!st.state || st.state === 'none'))) { bar.hidden = true; return; }
+    bar.hidden = false;
+    bar.append(el('span', 'askadma-dot' + (st.connected ? ' on' : '')),
+               el('span', '', st.connected ? `Swan: connected as ${st.hcc_user} until ${st.until}` : 'Swan: not connected'));
+    const b = el('button', 'askadma-linkbtn', st.connected ? 'Disconnect' : 'Connect'); b.type = 'button';
+    b.addEventListener('click', async () => {
+      if (st.connected) { b.disabled = true; await studioRequest('/api/askadma/swan/disconnect/', 'POST', {}); refreshSwanBar(); }
+      else openSwanConnect();
+    });
+    bar.appendChild(b);
+  }
+  function openSwanConnect(onDone) {
+    let box = $('askadma-swan');
+    if (!box) { box = el('div'); box.id = 'askadma-swan'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-label', 'Connect to HCC Swan'); document.body.appendChild(box); }
+    const prev = document.activeElement;
+    let polling = null;
+    function close(ok) { clearTimeout(polling); box.hidden = true; box.textContent = ''; if (prev && prev.focus) prev.focus(); refreshSwanBar(); if (onDone) onDone(ok); }
+    function view(nodes) { box.textContent = ''; const d = el('div', 'askadma-sbox'); nodes.forEach((n) => d.appendChild(n)); box.appendChild(d); box.hidden = false; return d; }
+    function title(text, iconName) { const h = el('h3'); h.append(icon(iconName), document.createTextNode(text)); return h; }
+    function form(errorText) {
+      const user = el('input'); user.type = 'text'; user.autocomplete = 'username'; user.value = store.get('askadma_hcc_user', '');
+      const pass = el('input'); pass.type = 'password'; pass.autocomplete = 'current-password';
+      const hours = el('select'); [[8, '8 hours (a workday)'], [4, '4 hours'], [2, '2 hours'], [12, '12 hours']].forEach(([v, t]) => {
+        const o = el('option', '', t); o.value = v; hours.appendChild(o); });
+      const useCode = el('input'); useCode.type = 'checkbox';
+      const code = el('input'); code.type = 'text'; code.inputMode = 'numeric'; code.autocomplete = 'one-time-code'; code.placeholder = '123456';
+      const codeLabel = el('label'); codeLabel.append(document.createTextNode('Duo passcode'), code); codeLabel.hidden = true;
+      useCode.addEventListener('change', () => { codeLabel.hidden = !useCode.checked; });
+      const lab = (t, input) => { const l = el('label'); l.append(document.createTextNode(t), input); return l; };
+      const checkLab = el('label', 'askadma-check'); checkLab.append(useCode, document.createTextNode('Use a Duo passcode instead of a push'));
+      const err = el('p', 'askadma-serr', errorText || '');
+      const go = smallButton('Connect', 'fa-plug', 'primary', submit);
+      const btns = el('div', 'askadma-sbtns'); btns.append(smallButton('Cancel', 'fa-times', '', () => close(false)), go);
+      const f = el('form'); f.style.display = 'contents';
+      f.addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+      view([title('Connect to HCC Swan', 'fa-bolt'),
+            el('p', 'askadma-snote', 'Sign in with your HCC account. ADMA uses your password only to log in to Swan and never stores it. Your jobs run under your own account.'),
+            lab('HCC username', user), lab('Password', pass), lab('Stay connected for', hours), checkLab, codeLabel, err, btns]);
+      (user.value ? pass : user).focus();
+      async function submit() {
+        if (!user.value.trim() || !pass.value) { err.textContent = 'Enter your HCC username and password.'; return; }
+        go.disabled = true; store.set('askadma_hcc_user', user.value.trim());
+        const data = await studioRequest('/api/askadma/swan/connect/', 'POST',
+          { username: user.value.trim(), password: pass.value, passcode: useCode.checked ? code.value : '', hours: Number(hours.value) });
+        pass.value = '';
+        if (data.error) { form(data.error); return; }
+        waiting(data);
+      }
+    }
+    function waiting(s) {
+      const msg = el('div', 'askadma-pt', s.message || 'Contacting Swan…'); msg.setAttribute('role', 'status');
+      const duo = el('div', 'askadma-duo'); duo.append(icon('fa-mobile-alt'), msg,
+        el('p', 'askadma-snote', 'Keep this open. It continues on its own once Duo approves the login.'));
+      view([title('Connect to HCC Swan', 'fa-bolt'), duo, (() => { const b = el('div', 'askadma-sbtns'); b.append(smallButton('Cancel', 'fa-times', '', () => close(false))); return b; })()]);
+      (async function poll() {
+        const st = await swanStatus();
+        if (box.hidden) return;
+        if (st.connected) { connected(st); return; }
+        if (st.state === 'failed' || st.error) { form(st.message || st.error || 'Could not connect.'); return; }
+        msg.textContent = st.message || 'Contacting Swan…';
+        polling = setTimeout(poll, 1500);
+      })();
+    }
+    function connected(st) {
+      const ok = el('div', 'askadma-duo'); const i = icon('fa-check-circle'); ok.append(i, el('div', 'askadma-pt', 'Connected to Swan'),
+        el('p', 'askadma-snote', `Signed in as ${st.hcc_user} until ${st.until}. ADMA uses this connection only for the runs you start.`));
+      const done = smallButton('Done', 'fa-check', 'primary', () => close(true));
+      view([title('Connect to HCC Swan', 'fa-bolt'), ok, (() => { const b = el('div', 'askadma-sbtns'); b.append(done); return b; })()]);
+      done.focus();
+    }
+    box.onkeydown = (e) => { if (e.key === 'Escape') close(false); };
+    form('');
+  }
+  // ---------- ADMA Studio / Swan run card ----------
+  const RUN_ACTIVE = ['queued', 'uploading', 'pending', 'running', 'fetching', 'importing'];
+  const RUN_LABELS = { awaiting_confirmation: ['Waiting for Run', ''], queued: ['Starting', 'busy'], uploading: ['Copying', 'busy'],
+    pending: ['Queued', 'busy'], running: ['Running', 'busy'], fetching: ['Saving', 'busy'], importing: ['Saving', 'busy'],
+    done: ['Done', 'ok'], failed: ['Failed', 'bad'], cancelled: ['Cancelled', ''], expired: ['Expired', ''] };
+  function addRunCard(parent, a) {
+    const card = el('div', 'askadma-run2');
+    parent.appendChild(card);
+    const url = '/api/askadma/studio/run/' + encodeURIComponent(a.run_id) + '/';
+    const sw = a.swan || {};
+    const items = a.items || [{ path: a.script, meta: 'Your script', kind: 'file', removable: false, size: 0, files: 1 }]
+      .concat((a.inputs || []).map((p) => ({ path: p, meta: '', kind: p.endsWith('/') ? 'folder' : 'file', removable: false, size: 0, files: 1 })));
+    const choice = { where: a.where === 'swan' && sw.available ? 'swan' : 'adma', gpu: sw.gpu || sw.default_gpu || 'any',
+      hours: sw.hours || sw.default_hours || 2, setup: sw.setup || store.get('askadma_swan_setup', ''), removed: new Set(), confirmBig: false,
+      picker: { open: false, folder: '', data: null, filter: '', sel: new Map() } };
+    const head = el('div', 'askadma-rhead'); const pill = el('span', 'askadma-pill', 'Checking');
+    const titleBox = el('div'); titleBox.style.cssText = 'flex:1;min-width:0';
+    titleBox.append(el('div', 'askadma-eyebrow', 'ADMA STUDIO'), el('h4', '', 'Run ' + String(a.script || '').split('/').pop()));
+    head.append(studioBadge('md'), titleBox, pill);
+    const body = el('div'); body.style.cssText = 'display:flex;flex-direction:column;gap:10px';
+    card.append(head, body);
+    let timer = null, last = null, renderSeq = 0;
+    const ACTIVE = RUN_ACTIVE;
+    function setPill(text, cls) { pill.textContent = text; pill.className = 'askadma-pill' + (cls ? ' ' + cls : ''); }
+    function chosen() { return items.filter((it) => !it.id || !choice.removed.has(it.id) || !it.removable); }
+    function totals() { const c = chosen(); return { files: c.reduce((n, it) => n + (it.files || 1), 0), size: c.reduce((n, it) => n + (it.size || 0), 0),
+      unknown: c.some((it) => it.kind === 'folder' && it.size == null) }; }
+    async function pickerLoad(folder) {
+      const pk = choice.picker;
+      pk.folder = folder; pk.data = null; pk.filter = '';
+      review(last);
+      const data = await studioRequest('/api/askadma/studio/browse/?folder=' + encodeURIComponent(folder || ''), 'GET');
+      if (pk.folder !== folder) return;
+      pk.data = data; review(last);
+    }
+    function pickerBox() {
+      const pk = choice.picker, box = el('div', 'askadma-picker');
+      box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Add data from ADMA');
+      const head = el('div', 'askadma-pkhead');
+      const where = pk.data && pk.data.folder ? pk.data.folder : { path: 'ADMA', parent_id: null };
+      if (pk.folder) head.appendChild(smallButton('Up', 'fa-arrow-up', '', () => pickerLoad(where.parent_id || '')));
+      head.appendChild(el('div', 'askadma-pkpath', where.path || 'ADMA'));
+      box.appendChild(head);
+      const find = el('input'); find.type = 'search'; find.placeholder = 'Filter this folder'; find.value = pk.filter;
+      find.setAttribute('aria-label', 'Filter this folder');
+      const listEl = el('ul', 'askadma-items askadma-pklist');
+      const draw = () => {
+        listEl.textContent = '';
+        if (!pk.data) { listEl.appendChild(el('li', 'askadma-im', 'Loading…')); return; }
+        if (pk.data.error) { listEl.appendChild(el('li', 'askadma-im', pk.data.error)); return; }
+        const f = pk.filter.toLowerCase();
+        const entries = (pk.data.folders || []).concat(pk.data.files || []).filter((e) => !f || e.name.toLowerCase().includes(f));
+        if (!entries.length) listEl.appendChild(el('li', 'askadma-im', 'Nothing here.'));
+        entries.forEach((e) => {
+          const li = el('li'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = pk.sel.has(e.id);
+          cb.setAttribute('aria-label', 'Select ' + e.name);
+          cb.addEventListener('change', () => { if (cb.checked) pk.sel.set(e.id, e); else pk.sel.delete(e.id); addBtn.lastChild.textContent = `Add ${pk.sel.size} selected`; addBtn.disabled = !pk.sel.size; });
+          const txt = el('div'); txt.style.cssText = 'flex:1;min-width:0';
+          if (e.kind === 'folder') { const open = el('button', 'askadma-pkopen', e.name + '/'); open.type = 'button'; open.addEventListener('click', () => pickerLoad(e.id)); txt.appendChild(open); }
+          else txt.appendChild(el('div', 'askadma-ip', e.name));
+          txt.appendChild(el('div', 'askadma-im', e.meta || ''));
+          li.append(cb, icon(e.kind === 'folder' ? 'fa-folder' : 'fa-file'), txt); listEl.appendChild(li);
+        });
+        if (pk.data.more_files) listEl.appendChild(el('li', 'askadma-im', `…and ${pk.data.more_files} more files. Pick the folder itself, or ask in the chat.`));
+      };
+      find.addEventListener('input', () => { pk.filter = find.value; draw(); });
+      const addBtn = smallButton(`Add ${pk.sel.size} selected`, 'fa-plus', 'primary', () => {
+        pk.sel.forEach((e) => {
+          choice.removed.delete(e.id);
+          if (!items.some((it) => it.id === e.id)) items.push(Object.assign({}, e, { removable: true, added: true }));
+        });
+        pk.sel.clear(); pk.open = false; choice.confirmBig = false; review(last);
+      });
+      addBtn.disabled = !pk.sel.size;
+      const foot = el('div', 'askadma-buttons');
+      foot.append(addBtn, smallButton('Close', 'fa-times', '', () => { pk.open = false; pk.sel.clear(); review(last); }));
+      draw(); box.append(find, listEl, foot);
+      return box;
+    }
+    function kv(rows) { const dl = el('dl', 'askadma-kv'); rows.forEach(([k, v]) => { if (v) { dl.appendChild(el('dt', '', k)); dl.appendChild(el('dd', '', v)); } }); return dl; }
+    function connLine(st) {
+      const line = el('div', 'askadma-conn'); const dot = el('span', 'askadma-dot' + (st && st.connected ? ' on' : ''));
+      line.appendChild(dot);
+      if (st && st.connected) line.appendChild(el('span', '', `Connected to Swan as ${st.hcc_user} · until ${st.until}`));
+      else {
+        line.appendChild(el('span', '', st && st.message && st.state !== 'none' ? st.message : 'Not connected to Swan'));
+        line.appendChild(smallButton('Connect to Swan', 'fa-plug', 'primary', () => openSwanConnect(() => review(last))));
+      }
+      return line;
+    }
+    async function review(s) {
+      const mine = ++renderSeq;   // a newer render (or the run starting) wins over this one
+      body.textContent = ''; setPill('Ready', '');
+      const swan = choice.where === 'swan';
+      if (sw.available) {
+        body.appendChild(el('div', 'askadma-label', 'Where should this run?'));
+        const wrap = el('div', 'askadma-where');
+        const opt = (id, name, sub) => { const b = el('button'); b.type = 'button'; b.setAttribute('aria-pressed', String(choice.where === id));
+          b.append(el('b', '', name), el('span', '', sub)); b.addEventListener('click', () => { choice.where = id; choice.confirmBig = false; review(last); }); return b; };
+        const gpuLabel = ((sw.gpus || []).find((g) => g.id === choice.gpu) || {}).label || 'GPU';
+        wrap.append(opt('adma', 'ADMA', '2 CPU · no GPU'), opt('swan', 'HCC Swan GPU', gpuLabel));
+        body.appendChild(wrap);
+      }
+      body.appendChild(el('div', 'askadma-label', swan ? 'What will be sent to Swan' : 'What this run will read'));
+      const ul = el('ul', 'askadma-items');
+      chosen().forEach((it) => {
+        const li = el('li'); li.appendChild(icon(it.kind === 'folder' ? 'fa-folder' : (/\.py$/i.test(it.path) ? 'fa-file-code' : 'fa-file')));
+        const txt = el('div'); txt.style.cssText = 'flex:1;min-width:0'; txt.append(el('div', 'askadma-ip', it.path), el('div', 'askadma-im', it.meta || ''));
+        li.appendChild(txt);
+        if (it.removable && it.id) { const x = el('button'); x.type = 'button'; x.setAttribute('aria-label', 'Remove ' + it.name); x.appendChild(icon('fa-times'));
+          x.addEventListener('click', () => { choice.removed.add(it.id); choice.confirmBig = false; review(last); }); li.appendChild(x); }
+        ul.appendChild(li);
+      });
+      if (!choice.picker.open) {
+        const addLi = el('li', 'askadma-addrow'); const addData = el('button'); addData.type = 'button';
+        addData.append(icon('fa-plus'), document.createTextNode(' Add data'));
+        addData.addEventListener('click', () => { choice.picker.open = true; pickerLoad(choice.picker.folder || ''); });
+        addLi.appendChild(addData); ul.appendChild(addLi);
+      }
+      body.appendChild(ul);
+      if (choice.picker.open) body.appendChild(pickerBox());
+      const t = totals();
+      body.appendChild(kv([
+        ['Copies to', swan ? `Swan · $WORK/adma/${a.run_id.slice(0, 8)}…/ (deleted after the run)` : 'Nothing is copied; ADMA reads the data where it is.'],
+        ['Results go to', a.results_to || a.output], ['Arguments', (a.arguments || []).length && choice.removed.size === 0 ? a.arguments.join(' ') : ''],
+        ['Total', `${t.files.toLocaleString()} file${t.files === 1 ? '' : 's'} · ${humanSize(t.size)}${t.unknown ? ' + the added folders (counted when it runs)' : ''}`],
+        ['Time limit', swan ? '' : `${a.timeout_minutes} minutes`]]));
+      let st = null;
+      if (swan) {
+        const opts = el('div', 'askadma-opts');
+        const gpu = el('select'); (sw.gpus || []).forEach((g) => { const o = el('option', '', g.label); o.value = g.id; gpu.appendChild(o); });
+        gpu.value = choice.gpu; gpu.addEventListener('change', () => { choice.gpu = gpu.value; review(last); });
+        const hrs = el('select'); (sw.hour_choices || [1, 2, 6, 12, 24, 72, 168]).forEach((h) => {
+          const o = el('option', '', h >= 24 ? `${h / 24} day${h === 24 ? '' : 's'}` : `${h} hour${h === 1 ? '' : 's'}`); o.value = h; hrs.appendChild(o); });
+        hrs.value = String(choice.hours); hrs.addEventListener('change', () => { choice.hours = Number(hrs.value); });
+        const setup = el('textarea'); setup.rows = 2; setup.value = choice.setup; setup.placeholder = 'Optional, e.g.\nmodule load anaconda\nconda activate myenv';
+        setup.addEventListener('input', () => { choice.setup = setup.value; });
+        const lab = (text, input, wide) => { const l = el('label', wide ? 'askadma-wide' : ''); l.append(document.createTextNode(text), input); return l; };
+        opts.append(lab('GPU', gpu), lab('Time limit', hrs), lab('Setup before the script (runs on Swan)', setup, true));
+        body.appendChild(opts);
+        st = await swanStatus();
+        if (mine !== renderSeq || (last && last.status !== 'awaiting_confirmation')) return;
+        body.appendChild(connLine(st));
+        body.appendChild(el('div', 'askadma-run-note', 'ADMA copies exactly the items above to your Swan $WORK, runs a Slurm job on the gpu partition, then brings the results back. Your originals are not changed.'));
+      } else {
+        body.appendChild(el('div', 'askadma-run-note', 'It runs in ADMA’s sandbox with no internet. It can read these inputs and saves only to its results folder.'));
+      }
+      const big = swan && t.size > 10 * 1024 ** 3;
+      const actions = el('div', 'askadma-buttons');
+      if (big && choice.confirmBig) {
+        const w = el('div', 'askadma-warn'); w.setAttribute('role', 'alert');
+        w.append(el('b', '', `This is a large copy: ${humanSize(t.size)}`),
+                 el('div', '', `Copying it to Swan takes about ${Math.max(1, Math.round(t.size / (50 * 1024 * 1024) / 60))} minutes and uses that much space in your $WORK. Send it?`));
+        const b = el('div', 'askadma-buttons');
+        b.append(smallButton(`Yes, send ${humanSize(t.size)}`, 'fa-paper-plane', 'primary', () => send('run')),
+                 smallButton('Go back', 'fa-arrow-left', '', () => { choice.confirmBig = false; review(last); }));
+        w.appendChild(b); body.appendChild(w);
+      } else {
+        const runBtn = smallButton(swan ? `Send ${humanSize(t.size)} to Swan and run` : 'Run', swan ? 'fa-paper-plane' : 'fa-play', 'primary',
+          () => { if (big) { choice.confirmBig = true; review(last); } else send('run'); });
+        if (swan && !(st && st.connected)) runBtn.disabled = true;
+        actions.append(runBtn, smallButton('Cancel', 'fa-times', '', () => send('cancel')));
+        body.appendChild(actions);
+      }
+      if (review.problem) { body.appendChild(el('div', 'askadma-run-state', review.problem)); review.problem = ''; }
+    }
+    function step(list, title, detail, state, extra) {
+      const li = el('li', state); const dotEl = el('span', 'askadma-pi'); if (state === 'done') dotEl.appendChild(icon('fa-check'));
+      if (state === 'stop') dotEl.appendChild(icon('fa-times'));
+      const txt = el('div'); txt.style.cssText = 'flex:1;min-width:0'; txt.append(el('div', 'askadma-pt', title));
+      if (detail) txt.appendChild(el('div', 'askadma-pd', detail));
+      if (extra) txt.appendChild(extra);
+      li.append(dotEl, txt); list.appendChild(li);
+    }
+    function progressSwan(s) {
+      const d = s.swan || {}; const st = s.status;
+      const order = ['uploading', 'pending', 'running', 'fetching'];
+      let at = { queued: 0, uploading: 0, pending: 1, running: 2, fetching: 3, done: 4 }[st];
+      let stopAt = -1;
+      if (st === 'failed' || st === 'cancelled') {
+        // the step where it went wrong gets the red mark; results that came back still count as brought back
+        stopAt = d.job_id ? (d.slurm_state && !['PENDING', 'CONFIGURING'].includes(d.slurm_state) ? 2 : 1) : 0;
+        at = s.output_url ? 4 : stopAt;
+      }
+      const ul = el('ol', 'askadma-prog'); ul.setAttribute('aria-label', 'Run progress');
+      const state = (i) => (i === stopAt ? 'stop' : i < at ? 'done' : i === at ? 'now' : 'wait');
+      const pct = d.bytes_total ? Math.min(100, Math.round(100 * (d.bytes_sent || 0) / d.bytes_total)) : 0;
+      let bar = null;
+      if (at === 0 && st === 'uploading') { bar = el('div', 'askadma-bar'); const i = el('i'); i.style.width = pct + '%'; bar.appendChild(i); }
+      step(ul, 'Copy to Swan', at > 0 ? `${humanSize(d.bytes_total)} copied` : st === 'uploading' ? `${humanSize(d.bytes_sent)} of ${humanSize(d.bytes_total)} · ${pct}%` : `${humanSize(d.bytes_total)} to your $WORK`, state(0), bar);
+      step(ul, 'Waiting for a GPU', d.job_id ? (at > 1 ? `Job ${d.job_id} started` : `Job ${d.job_id} queued ${d.reason || ''}`) : `Slurm job on the gpu partition · ${d.gpu || ''}`, state(1));
+      let log = null;
+      if (s.log_tail && (st === 'running' || stopAt === 2)) { log = el('pre'); log.textContent = s.log_tail; }
+      const gpuName = d.gpu_used || d.gpu || 'GPU';
+      step(ul, 'Running on the GPU', at > 2 ? (d.ran ? `Ran ${d.ran}${d.gpu_used ? ' on ' + d.gpu_used : ''}` : 'Finished')
+        : at === 2 ? `${d.elapsed || 'Starting'}${d.reason ? ' · node ' + d.reason : ''}` : d.gpu, state(2), log);
+      step(ul, 'Bringing results back', at > 3 ? `${s.files_saved || 0} file${s.files_saved === 1 ? '' : 's'} saved` : 'into ' + (a.results_to || ''), state(3));
+      body.appendChild(el('div', 'askadma-run-note', `Swan · ${gpuName}${d.node ? ' · node ' + d.node : ''} · as ${d.hcc_user || 'you'}`));
+      body.appendChild(ul);
+      if (d.needs_connection && ACTIVE.includes(st)) {
+        const w = el('div', 'askadma-warn'); w.append(el('b', '', 'The Swan connection closed'),
+          el('div', '', 'The job keeps going on Swan. Connect again so ADMA can follow it and bring the results back.'));
+        const b = el('div', 'askadma-buttons'); b.appendChild(smallButton('Connect to Swan', 'fa-plug', 'primary', () => openSwanConnect(() => poll())));
+        w.appendChild(b); body.appendChild(w);
+      }
+    }
+    function show(s, problem) {
+      clearTimeout(timer); card.classList.remove('done', 'failed');
+      if (!s.status) { body.textContent = ''; body.appendChild(el('div', 'askadma-run-state', 'Could not get the status: ' + (s.error || 'no answer') + '.')); return; }
+      last = s;
+      const st = s.status;
+      if (st === 'awaiting_confirmation') { review.problem = problem || ''; review(s); return; }
+      renderSeq++;
+      body.textContent = '';
+      setPill(...(RUN_LABELS[st] || [st, '']));
+      if (s.where === 'swan') progressSwan(s);
+      else {
+        const text = { queued: 'Waiting for the runner; another script is running.', running: `Running for ${s.seconds || 0} s`,
+          importing: 'Saving the results to ADMA Studio' }[st];
+        if (text) body.appendChild(el('div', 'askadma-run-state', text));
+        if (s.log_tail && st === 'running') { const pre = el('pre'); pre.textContent = s.log_tail; body.appendChild(pre); pre.scrollTop = pre.scrollHeight; }
+      }
+      if (st === 'done' || st === 'failed') { card.classList.add(st); body.appendChild(resultBlock(s)); }
+      if (st === 'cancelled') body.appendChild(el('div', 'askadma-run-state', s.error_message || 'Cancelled. Nothing was run.'));
+      if (st === 'expired') body.appendChild(el('div', 'askadma-run-state', 'Not run: the Run button expires after 30 minutes. Ask again to run it.'));
+      if (problem) body.appendChild(el('div', 'askadma-run-state', problem));
+      const actions = el('div', 'askadma-buttons');
+      if (ACTIVE.includes(st) && st !== 'fetching' && st !== 'importing' && !(s.swan && s.swan.cancel_requested))
+        actions.appendChild(smallButton(s.where === 'swan' && ['pending', 'running'].includes(st) ? 'Stop the job' : 'Stop', 'fa-stop', '', () => send('cancel')));
+      if (s.output_url) actions.appendChild(smallButton('Open results', 'fa-folder-open', 'primary', () => runAction({ type: 'navigate', url: s.output_url }, true)));
+      if (actions.childNodes.length) body.appendChild(actions);
+      if (ACTIVE.includes(st) && !(s.swan && s.swan.needs_connection)) timer = setTimeout(poll, s.where === 'swan' ? 3000 : 2500);
+    }
+    function resultBlock(s) {
+      const wrap = el('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+      if (s.status === 'failed') wrap.appendChild(el('div', 'askadma-run-state askadma-err', s.error_message || 'The run failed.'));
+      if (s.hint) {
+        const h = el('div', 'askadma-hint'); h.setAttribute('role', 'note');
+        h.append(el('b', '', s.hint.title), el('div', '', s.hint.text));
+        if (s.hint.command) {
+          const row = el('div', 'askadma-cmd'); const code = el('code', '', s.hint.command);
+          const copy = smallButton('Copy', 'fa-copy', '', async () => {
+            try { await navigator.clipboard.writeText(s.hint.command); copy.lastChild.textContent = 'Copied'; } catch (e) { copy.lastChild.textContent = 'Select and copy'; }
+          });
+          row.append(code, copy); h.appendChild(row);
+        }
+        wrap.appendChild(h);
+      }
+      if (s.ran_text) wrap.appendChild(el('div', 'askadma-run-state', s.ran_text));
+      const previews = s.previews || [];
+      if (previews.length) {
+        const grid = el('div', 'askadma-grid askadma-previews');
+        previews.forEach((p, i) => {
+          const t = el('button', 'askadma-tile'); t.type = 'button'; t.title = p.name;
+          const img = document.createElement('img'); img.loading = 'lazy'; img.alt = p.name; img.src = p.thumb;
+          img.addEventListener('error', () => t.remove());
+          t.append(img, el('div', 'askadma-cap', p.name.split('/').pop()));
+          t.addEventListener('click', () => openViewer(previews.map(galleryToPhoto), i));
+          grid.appendChild(t);
+        });
+        wrap.appendChild(grid);
+      }
+      if (s.files_saved != null) {
+        const o = s.outputs || {}, n = s.files_saved;
+        const kinds = [o.figures ? `${o.figures} figure${o.figures === 1 ? '' : 's'}` : '', o.results ? `${o.results} result file${o.results === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ');
+        const line = el('div', 'askadma-run-state');
+        line.appendChild(document.createTextNode(`${n} file${n === 1 ? '' : 's'} saved${kinds && n ? ' (' + kinds + ')' : ''}${s.output_url ? ' to ' : '.'}`));
+        if (s.output_url) { const link = el('a', 'askadma-link', s.saved_label || s.output); link.href = s.output_url; line.appendChild(link); }
+        wrap.appendChild(line);
+      }
+      if (s.log_tail) {
+        const d = el('details', 'askadma-log'); if (s.status === 'failed' && !s.hint) d.open = true;
+        d.appendChild(el('summary', '', 'Show the log')); const pre = el('pre'); pre.textContent = s.log_tail; d.appendChild(pre);
+        wrap.appendChild(d);
+      }
+      return wrap;
+    }
+    async function send(action) {
+      body.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      const payload = { action };
+      if (action === 'run') {
+        Object.assign(payload, { where: choice.where, gpu: choice.gpu, hours: choice.hours, setup: choice.setup, remove: Array.from(choice.removed),
+          add: items.filter((it) => it.added && !choice.removed.has(it.id)).map((it) => ({ kind: it.kind, id: it.id })) });
+        if (choice.where === 'swan') store.set('askadma_swan_setup', choice.setup || '');
+      }
+      const data = await studioRequest(url, 'POST', payload);
+      if (data.needs_connection) { review.problem = ''; await review(last); openSwanConnect(() => review(last)); return; }
+      if (data.status) show(data); else show(await studioRequest(url, 'GET'), data.error);
+    }
+    async function poll(first) {
+      // later polls stop once the card is gone (new conversation); the first one runs before it is placed
+      if (first || document.body.contains(card)) show(await studioRequest(url, 'GET'));
+    }
+    poll(true);
+  }
+  // ---------- your runs ----------
+  function when(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000), today = new Date();
+    const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return d.toDateString() === today.toDateString() ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t;
+  }
+  function addRunsList(parent) {
+    const box = el('div', 'askadma-runs');
+    const head = el('div', 'askadma-rhead'); const refresh = el('button', 'askadma-iconbtn'); refresh.type = 'button';
+    refresh.setAttribute('aria-label', 'Refresh'); refresh.title = 'Refresh'; refresh.appendChild(icon('fa-sync-alt'));
+    const titleBox = el('div'); titleBox.style.cssText = 'flex:1;min-width:0';
+    titleBox.append(el('div', 'askadma-eyebrow', 'ADMA STUDIO'), el('h4', '', 'Your runs'));
+    head.append(studioBadge('md'), titleBox, refresh);
+    const list = el('div'); list.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+    box.append(head, list); parent.appendChild(box);
+    let timer = null;
+    function row(r) {
+      const div = el('div', 'askadma-runrow');
+      const top = el('div', 'askadma-rhead'); const [label, cls] = RUN_LABELS[r.status] || [r.status, ''];
+      top.append(icon(r.where === 'swan' ? 'fa-bolt' : 'fa-server'), el('b', '', r.script), el('span', 'askadma-pill' + (cls ? ' ' + cls : ''), label));
+      div.appendChild(top);
+      const sw = r.swan || {};
+      const where = r.where === 'swan' ? `Swan · ${sw.gpu || 'GPU'}${sw.job_id ? ' · job ' + sw.job_id : ''}` : 'ADMA';
+      div.appendChild(el('div', 'askadma-pd', `${where} · ${when(r.started || r.created)}`));
+      let note = '';
+      if (sw.needs_connection && RUN_ACTIVE.includes(r.status)) note = 'Swan connection closed: connect again so ADMA can follow it.';
+      else if (r.status === 'uploading') note = `Copying to Swan · ${sw.copy_percent || 0}%`;
+      else if (r.status === 'pending') note = `Waiting for a GPU ${sw.reason || ''}`;
+      else if (r.status === 'running') note = r.where === 'swan' ? `Running on the GPU · ${sw.elapsed || ''}` : `Running for ${r.seconds || 0} s`;
+      else if (r.status === 'done') note = `${r.files_saved || 0} file${r.files_saved === 1 ? '' : 's'} saved to ${r.saved_label || r.output}`;
+      else if (r.status === 'failed') note = r.error_message || 'The run failed.';
+      if (note) div.appendChild(el('div', 'askadma-pd', note));
+      const btns = el('div', 'askadma-buttons');
+      if (r.output_url) btns.appendChild(smallButton('Open results', 'fa-folder-open', '', () => runAction({ type: 'navigate', url: r.output_url }, true)));
+      if (RUN_ACTIVE.includes(r.status) || r.status === 'awaiting_confirmation') {
+        btns.appendChild(smallButton(r.status === 'awaiting_confirmation' ? 'Open the card' : 'Show progress', 'fa-eye', '', () => {
+          const t = el('div', 'askadma-turn'); box.after(t);
+          addRunCard(t, { run_id: r.run_id, script: r.script, where: r.where, inputs: r.inputs || [], output: r.output, timeout_minutes: 30 });
+          t.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest' });
+        }));
+      }
+      if (sw.needs_connection && RUN_ACTIVE.includes(r.status)) btns.appendChild(smallButton('Connect to Swan', 'fa-plug', 'primary', () => openSwanConnect(() => load())));
+      if (btns.childNodes.length) div.appendChild(btns);
+      return div;
+    }
+    async function load() {
+      clearTimeout(timer); refresh.disabled = true;
+      const data = await studioRequest('/api/askadma/studio/runs/', 'GET');
+      refresh.disabled = false; list.textContent = '';
+      if (data.error) { list.appendChild(el('div', 'askadma-run-state', 'Could not load your runs: ' + data.error)); return; }
+      const runs = data.runs || [];
+      if (!runs.length) list.appendChild(el('div', 'askadma-run-note', 'No runs yet. Ask me to run one of your Python scripts, on ADMA or on a Swan GPU.'));
+      runs.forEach((r) => list.appendChild(row(r)));
+      if (runs.some((r) => RUN_ACTIVE.includes(r.status)) && document.body.contains(box)) timer = setTimeout(load, 10000);
+    }
+    refresh.addEventListener('click', load);
+    load();
+  }
+  async function saveToStudio(a) {
+    const note = el('div', 'askadma-msg note', 'Saving to ADMA Studio');
+    msgs.appendChild(note); msgs.scrollTop = msgs.scrollHeight;
+    const data = await studioRequest('/api/askadma/studio/save/', 'POST', { kind: a.kind, source: a.source, title: a.title || '' });
+    note.remove();
+    if (data.error) { addNote('Could not save: ' + data.error); return; }
+    const entry = { role: 'assistant', local: true, content: data.message,
+      suggestions: [{ label: 'Open reports folder', icon: 'fa-folder-open', action: { type: 'navigate', url: data.folder_url } }]
+        .concat((data.saved || []).slice(0, 2).map((f) => ({ label: 'Open ' + f.name.replace(/^\d{4}-\d\d-\d\d_\d{4}_/, ''),
+                                                           icon: 'fa-file', action: { type: 'navigate', url: f.url } }))) };
+    conversation.push(entry); save(); renderEntry(entry); msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function runAction(a, fromClick) {
+    if (!a || !a.type) return;
+    if (a.type === 'navigate' && a.url) {
+      if (a.highlight && samePage(a.url)) { highlight(a.highlight); return; }
+      if (a.highlight) store.sset(PENDING, JSON.stringify({ url: a.url, highlight: a.highlight }));
+      setTimeout(() => { window.location.href = a.url; }, fromClick ? 0 : 900);
+    } else if (a.type === 'show_detections') {
+      openViewer([a], 0);
+    } else if (a.type === 'show_gallery' || a.type === 'render_chart') {
+      const turn = el('div', 'askadma-turn');
+      if (a.type === 'show_gallery') addGallery(turn, a); else addChart(turn, a);
+      msgs.appendChild(turn); msgs.scrollTop = msgs.scrollHeight;
+      conversation.push({ role: 'assistant', content: '', display: [a], local: true }); save();
+    } else if (a.type === 'open_url' && a.url) {
+      if (fromClick) window.open(a.url, '_blank', 'noopener');
+    } else if (a.type === 'highlight' && a.id) {
+      highlight(a.id);
+    } else if (a.type === 'studio_save' && fromClick) {
+      saveToStudio(a);
+    } else if (a.type === 'show_runs') {
+      const turn = el('div', 'askadma-turn'); addRunsList(turn);
+      msgs.appendChild(turn); msgs.scrollTop = msgs.scrollHeight;
+      if (fromClick) { conversation.push({ role: 'assistant', content: '', display: [a], local: true }); save(); }
+    }
+  }
+  function applyPending() {
+    const raw = store.sget(PENDING);
+    if (!raw) return;
+    store.sset(PENDING, null);
+    try {
+      const p = JSON.parse(raw);
+      if (p.highlight && samePage(p.url)) setTimeout(() => highlight(p.highlight), 250);
+    } catch (e) {}
+  }
+
+  // ---------- conversation rendering ----------
+  function addNote(text) { const n = el('div', 'askadma-msg note', text); msgs.appendChild(n); msgs.scrollTop = msgs.scrollHeight; }
+  function renderButtons(parent, buttons) {
+    if (!buttons || !buttons.length) return;
+    const row = el('div', 'askadma-buttons');
+    buttons.forEach((b) => {
+      const btn = el('button', 'askadma-btn'); btn.type = 'button';
+      btn.appendChild(icon(b.icon)); btn.appendChild(document.createTextNode(b.label));
+      btn.addEventListener('click', () => {
+        if (b.action && b.action.type === 'studio_save') btn.disabled = true;
+        if (b.action) runAction(b.action, true); else if (b.prompt) ask(b.prompt);
+      });
+      row.appendChild(btn);
+    });
+    parent.appendChild(row);
+  }
+  function renderEntry(m) {
+    if (m.role === 'user') { msgs.appendChild(el('div', 'askadma-msg user', m.content)); return; }
+    const turn = el('div', 'askadma-turn');
+    if (m.steps && m.steps.length) {
+      const d = el('details', 'askadma-done-steps');
+      d.appendChild(el('summary', '', `${m.steps.length} step${m.steps.length > 1 ? 's' : ''}${m.seconds ? ` in ${m.seconds} s` : ''}`));
+      const ul = el('ul', 'askadma-steps'); m.steps.forEach((s) => ul.appendChild(el('li', '', s))); d.appendChild(ul);
+      turn.appendChild(d);
+    }
+    if (m.content) { const b = el('div', 'askadma-msg bot'); renderText(b, m.content); turn.appendChild(b); }
+    (m.display || []).forEach((a) => {
+      try {
+        if (a.type === 'render_chart') addChart(turn, a);
+        else if (a.type === 'show_gallery') addGallery(turn, a);
+        else if (a.type === 'show_detections') addPhoto(turn, a);
+        else if (a.type === 'confirm_run') addRunCard(turn, a);
+        else if (a.type === 'show_runs') addRunsList(turn);
+      } catch (e) {}
+    });
+    renderButtons(turn, m.suggestions);
+    msgs.appendChild(turn);
+  }
+  function renderAll() {
+    msgs.textContent = '';
+    if (!conversation.length) {
+      const hello = el('div', 'askadma-msg bot');
+      renderText(hello, 'Hi! I can find files, show and count what is in photos, scan camera folders, and analyze or chart spreadsheets.');
+      msgs.appendChild(hello);
+      renderButtons(msgs, [
+        { label: 'What is in this folder?', icon: 'fa-folder-open', prompt: 'What is in this folder?' },
+        { label: 'Find spreadsheets', icon: 'fa-table', prompt: 'Find spreadsheets and CSV files' },
+        { label: 'Show recent uploads', icon: 'fa-clock', prompt: 'What was added in the last 7 days?' }]);
+    }
+    conversation.forEach(renderEntry);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  // ---------- asking ----------
+  let busy = false;
+  async function ask(text) {
+    const q = String(text || '').trim();
+    if (!q || busy) return;
+    busy = true; send.disabled = true;
+    if (panel.hidden) openPanel(false);
+    conversation.push({ role: 'user', content: q }); save();
+    msgs.appendChild(el('div', 'askadma-msg user', q));
+
+    const live = el('div', 'askadma-turn askadma-live');
+    const ul = el('ul', 'askadma-steps');
+    const now = el('li', 'now', 'Starting');
+    const clock = el('span', 'askadma-clock', '0 s');
+    now.appendChild(clock); ul.appendChild(now); live.appendChild(ul); msgs.appendChild(live);
+    msgs.scrollTop = msgs.scrollHeight;
+    const started = Date.now(), steps = [];
+    const timer = setInterval(() => { clock.textContent = Math.round((Date.now() - started) / 1000) + ' s'; }, 1000);
+    function step(textNow) {
+      if (now.firstChild && now.firstChild.nodeType === 3 && now.firstChild.nodeValue !== 'Starting') {
+        const done = el('li', '', now.firstChild.nodeValue); ul.insertBefore(done, now); steps.push(now.firstChild.nodeValue);
+      }
+      now.firstChild.nodeValue = textNow;
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    let final = null, error = null;
     try {
       const resp = await fetch('/api/askadma/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
-        body: JSON.stringify({ messages: conversation.slice(-12), current_url: window.location.pathname })
+        body: JSON.stringify({ messages: conversation.filter((m) => !m.local).slice(-12).map((m) => ({ role: m.role, content: m.content })),
+                               current_url: location.pathname + location.search, stream: true })
       });
-      const data = await resp.json();
-      typing.remove();
-      const answer = data.answer || ('Error: ' + (data.error || 'no answer'));
-      conversation.push({ role: 'assistant', content: answer });
-      addMsgEl(answer, 'bot'); saveConv();
-      if (data.action) {
-        if (data.action.type === 'render_chart') { addChart(data.action); }
-        else if (data.action.type === 'navigate' && data.action.url) {
-          setTimeout(() => { window.location.href = data.action.url; }, 900);
+      const type = resp.headers.get('Content-Type') || '';
+      if (!resp.ok && !type.includes('json')) throw new Error(`the server answered ${resp.status}`);
+      if (type.includes('ndjson') && resp.body && resp.body.getReader) {
+        const reader = resp.body.getReader(), dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (value) buf += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+            if (!line) continue;
+            const ev = JSON.parse(line);
+            if (ev.type === 'step') step(ev.text);
+            else if (ev.type === 'done') final = ev;
+            else if (ev.type === 'error') error = ev.error;
+          }
+          if (done) break;
         }
+      } else {
+        const data = await resp.json();
+        if (data.error) error = data.error;
+        else final = { answer: data.answer, actions: data.actions || (data.action ? [data.action] : []), suggestions: data.suggestions || [] };
       }
     } catch (e) {
-      typing.remove(); addMsgEl('Request failed: ' + e, 'bot');
-    } finally { send.disabled = false; input.focus(); }
-  }
-  send.addEventListener('click', ask);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+      error = (e && e.message) || String(e);
+    }
+    clearInterval(timer);
+    if (now.firstChild && now.firstChild.nodeValue !== 'Starting') steps.push(now.firstChild.nodeValue);
+    live.remove();
 
-  // Auto-open after a navigation if a conversation exists (so chat persists across pages)
-  if (conversation.length > 0) { /* stays available via FAB; history already loaded */ }
+    if (final) {
+      const actions = final.actions || [];
+      const entry = { role: 'assistant', content: final.answer || '', steps, seconds: Math.round((Date.now() - started) / 1000),
+                      suggestions: final.suggestions || [],
+                      display: actions.filter((a) => ['render_chart', 'show_gallery', 'show_detections', 'confirm_run', 'show_runs'].includes(a.type)) };
+      conversation.push(entry); save(); renderEntry(entry);
+      msgs.scrollTop = msgs.scrollHeight;
+      const viewerAction = actions.filter((a) => a.type === 'show_detections').pop();
+      if (viewerAction) openViewer([viewerAction], 0);
+      const nav = actions.filter((a) => a.type === 'navigate').pop();
+      if (nav) runAction(nav, false);
+      actions.filter((a) => a.type === 'highlight').forEach((a) => runAction(a, false));
+    } else {
+      addNote('Something went wrong: ' + (error || 'no answer') + '. Try again.');
+    }
+    busy = false; send.disabled = false; input.focus();
+  }
+
+  form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value; input.value = ''; autosize(); ask(t); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+  function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px'; }
+  input.addEventListener('input', autosize);
+
+  if (store.get(OPEN, '0') === '1') openPanel(false);
+  try { markStudioCards(); } catch (e) {}
+  renderAll();
+  msgs.scrollTop = msgs.scrollHeight;
+  applyPending();
+  window.AskADMA = { open: openPanel, close: closePanel, ask: ask };
 })();
 </script>
-<!-- ===== end Ask ADMA widget ===== -->
+<!-- ===== end Ask ADMA side panel ===== -->

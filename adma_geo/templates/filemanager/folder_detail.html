@@ -101,14 +101,14 @@
         {% for breadcrumb in breadcrumbs %}
             {% if forloop.last %}
             <li class="breadcrumb-item active">
-                <i class="fas fa-folder me-1"></i>{{ breadcrumb.name }}
+                {% if breadcrumb.name == 'ADMA Studio' %}<span class="adma-studio-badge adma-studio-badge-xs me-1" aria-hidden="true"><i class="fas fa-seedling"></i></span>{% else %}<i class="fas fa-folder me-1"></i>{% endif %}{{ breadcrumb.name }}
             </li>
             {% else %}
             <li class="breadcrumb-item">
                 {% if is_public_view %}
-                    <a href="{% url 'filemanager:public_folder_detail' breadcrumb.id %}">{{ breadcrumb.name }}</a>
+                    <a href="{% url 'filemanager:public_folder_detail' breadcrumb.id %}">{% if breadcrumb.name == 'ADMA Studio' %}<span class="adma-studio-badge adma-studio-badge-xs me-1" aria-hidden="true"><i class="fas fa-seedling"></i></span>{% endif %}{{ breadcrumb.name }}</a>
                 {% else %}
-                    <a href="{% url 'filemanager:folder_detail' breadcrumb.id %}">{{ breadcrumb.name }}</a>
+                    <a href="{% url 'filemanager:folder_detail' breadcrumb.id %}">{% if breadcrumb.name == 'ADMA Studio' %}<span class="adma-studio-badge adma-studio-badge-xs me-1" aria-hidden="true"><i class="fas fa-seedling"></i></span>{% endif %}{{ breadcrumb.name }}</a>
                 {% endif %}
             </li>
             {% endif %}
@@ -122,7 +122,7 @@
         <div class="d-flex justify-content-between align-items-center">
             <div>
                 <h1 class="h2 mb-1">
-                    <i class="fas fa-folder me-2" style="color: #ffc107;"></i>{{ folder.name }}
+                    {% if folder.third_party_source == 'adma_studio' %}<span class="adma-studio-badge adma-studio-badge-lg me-2" aria-hidden="true"><i class="fas fa-seedling"></i></span>{% if folder.name == 'ADMA Studio' %}<span class="adma-studio-lockup"><b>ADMA</b> Studio</span>{% else %}<span class="adma-studio-title"><span class="adma-studio-eyebrow"><b>ADMA</b> Studio</span>{{ folder.name }}</span>{% endif %}{% else %}<i class="fas fa-folder me-2" style="color: #ffc107;"></i>{{ folder.name }}{% endif %}
                 </h1>
                 <p class="text-muted">
                     {% if folder.is_public %}
@@ -489,7 +489,7 @@
                         <div class="col-md-4 col-sm-6 mb-3">
                             <div class="folder-item" data-folder-id="{{ subfolder.id }}" onclick="window.location.href='{% if is_public_view %}{% url 'filemanager:public_folder_detail' subfolder.id %}{% else %}{% url 'filemanager:folder_detail' subfolder.id %}{% endif %}'">
                                 <div class="d-flex align-items-center">
-                                    <i class="fas fa-folder folder-icon"></i>
+                                    {% if subfolder.third_party_source == 'adma_studio' and subfolder.name == 'ADMA Studio' %}<span class="adma-studio-folder" title="ADMA Studio: scripts, runs and reports"><i class="fas fa-folder folder-icon"></i><span class="adma-studio-badge adma-studio-badge-sm" aria-hidden="true"><i class="fas fa-seedling"></i></span></span>{% else %}<i class="fas fa-folder folder-icon"></i>{% endif %}
                                     <div class="flex-grow-1">
                                         <h6 class="mb-1 fw-bold">{{ subfolder.name }}</h6>
                                         <small class="text-muted">
@@ -590,7 +590,7 @@
                                 <tr data-folder-id="{{ subfolder.id }}" style="cursor: pointer;" onclick="window.location.href='{% if is_public_view %}{% url 'filemanager:public_folder_detail' subfolder.id %}{% else %}{% url 'filemanager:folder_detail' subfolder.id %}{% endif %}'">
                                     <td>
                                         <div class="d-flex align-items-center">
-                                            <i class="fas fa-folder me-3"></i>
+                                            {% if subfolder.third_party_source == 'adma_studio' and subfolder.name == 'ADMA Studio' %}<span class="adma-studio-folder me-3" title="ADMA Studio: scripts, runs and reports"><i class="fas fa-folder"></i><span class="adma-studio-badge adma-studio-badge-sm" aria-hidden="true"><i class="fas fa-seedling"></i></span></span>{% else %}<i class="fas fa-folder me-3"></i>{% endif %}
                                             <div>
                                                 <strong>{{ subfolder.name }}</strong>
                                                 {% if subfolder.is_public %}
