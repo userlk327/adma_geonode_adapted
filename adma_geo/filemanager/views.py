@@ -8,7 +8,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib import messages
 from django.views.generic import CreateView, TemplateView
 from django.http import JsonResponse, HttpResponse, Http404, FileResponse
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Sum
 from django.urls import reverse_lazy
 from django.conf import settings
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
@@ -57,15 +57,22 @@ def get_robust_user_statistics(user):
         stale_files.update(deletion_in_progress=False)
         stale_folders.update(deletion_in_progress=False)
     
-    # Calculate accurate statistics based on what actually exists
-    active_files = File.objects.filter(owner=user, deletion_in_progress=False)
-    active_folders = Folder.objects.filter(owner=user, deletion_in_progress=False)
+    # Calculate accurate statistics based on what actually exists.
+    # Third-party rows (ADAPT, John Deere, Realm5) belong to the account that syncs them,
+    # not to the user's own data, so the cards count the same rows the Data panel lists.
+    active_files = File.objects.filter(owner=user, deletion_in_progress=False, is_third_party=False)
+    active_folders = Folder.objects.filter(owner=user, deletion_in_progress=False, is_third_party=False)
     
+    totals = active_files.aggregate(
+        total_files=Count('id'),
+        total_size=Sum('file_size'),
+        public_files=Count('id', filter=Q(is_public=True)),
+    )
     stats = {
-        'total_files': active_files.count(),
+        'total_files': totals['total_files'],
         'total_folders': active_folders.count(),
-        'total_size': sum(f.file_size for f in active_files),
-        'public_files': active_files.filter(is_public=True).count(),
+        'total_size': totals['total_size'] or 0,
+        'public_files': totals['public_files'],
     }
     
     # Add debug information
