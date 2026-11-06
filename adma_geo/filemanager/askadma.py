@@ -342,6 +342,7 @@ _STEP_LABELS = {
     "open_studio": "Opening your ADMA Studio",
     "globus_collections": "Looking up your Globus collections", "globus_list": "Listing the Globus folder",
     "globus_copy": "Preparing the Globus copy", "globus_copy_status": "Checking the Globus copy",
+    "globus_schedule_copy": "Preparing the Globus schedule", "globus_schedules": "Checking your Globus schedules",
     "read_file_data": "Reading the data", "summarize_file": "Reading the file", "get_context": "Checking this page",
 }
 

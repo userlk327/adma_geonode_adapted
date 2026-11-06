@@ -208,6 +208,12 @@
   .askadma-gkv { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12.5px; }
   .askadma-gkv dt { color: var(--askadma-muted); font-weight: 600; } .askadma-gkv dd { margin: 0; overflow-wrap: anywhere; }
   .askadma-gsteps { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--askadma-muted); line-height: 1.5; }
+  .askadma-gform { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 8px; font-size: 12.5px; }
+  .askadma-gform label { display: flex; flex-direction: column; gap: 3px; color: var(--askadma-muted); font-weight: 600; }
+  .askadma-gform select, .askadma-gform input { font: inherit; font-weight: 400; color: inherit; padding: 5px 7px;
+    border: 1px solid #d6dbd8; border-radius: 6px; background: #fff; min-width: 0; width: 100%; box-sizing: border-box; }
+  .askadma-gwhen { font-size: 13px; font-weight: 600; }
+  @media (max-width: 420px) { .askadma-gform { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) { .askadma-prog li.now .askadma-pi { animation: none; } }
   .askadma-hl { outline: 3px solid var(--askadma-amber) !important; outline-offset: 2px; border-radius: 6px; background: #fff7df !important; }
 
@@ -687,7 +693,7 @@
       const changed = el('input'); changed.type = 'checkbox'; changed.checked = a.sync !== 'all';
       const lab = el('label', 'askadma-pd'); lab.style.cssText = 'display:flex;gap:6px;align-items:center';
       lab.append(changed, document.createTextNode('Only copy new or changed files'));
-      card.append(lab, el('div', 'askadma-pd', 'Globus checks every copied file. Nothing is deleted on either side.'));
+      card.append(lab, el('div', 'askadma-pd', 'Nothing is deleted on either side.' + (a.checksum_note ? ' ' + a.checksum_note : '')));
       const msg = el('div', 'askadma-pd'); msg.setAttribute('role', 'status');
       if (errorText) { msg.textContent = errorText; msg.style.color = 'var(--askadma-red-dark)'; }
       card.appendChild(msg);
@@ -722,7 +728,7 @@
         card.appendChild(btns);
         return;
       }
-      const [label, cls] = GLOBUS_LABELS[st.status] || [st.status || 'Starting', 'busy'];
+      const [label, cls] = st.warning ? ['Retrying', 'busy'] : (GLOBUS_LABELS[st.status] || [st.status || 'Starting', 'busy']);
       card.append(header(label, cls), route());
       const bar = el('div', 'askadma-gbar'); const fill = el('span'); fill.style.width = (st.percent || 0) + '%'; bar.appendChild(fill);
       bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', st.percent || 0); bar.setAttribute('aria-valuemin', 0); bar.setAttribute('aria-valuemax', 100);
@@ -746,6 +752,118 @@
       follow(st);
     }
     if (a.task_id) { card.append(header('Checking…', 'busy'), route()); poll(); }
+    else if (a.dismissed) dismissed();
+    else proposal('');
+  }
+  // ---------- Globus schedule card: proposed by Ask ADMA, saved only by the user's click ----------
+  const GDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const gpad = (n) => String(n).padStart(2, '0');
+  const gLocalInput = (d) => d.getFullYear() + '-' + gpad(d.getMonth() + 1) + '-' + gpad(d.getDate()) + 'T' + gpad(d.getHours()) + ':' + gpad(d.getMinutes());
+  function globusFirstRun(a) {
+    const [hh, mm] = String(a.time || '02:00').split(':').map(Number);
+    const now = new Date();
+    let d;
+    if (a.date) {
+      const [y, m, dd] = a.date.split('-').map(Number);
+      d = new Date(y, m - 1, dd, hh, mm);
+    } else {
+      d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm);
+      const want = GDAYS.indexOf(a.day);
+      if (want >= 0) { d.setDate(d.getDate() + (want - d.getDay() + 7) % 7); if (d <= now) d.setDate(d.getDate() + 7); }
+      else if (d <= now) d.setDate(d.getDate() + 1);
+    }
+    return d;
+  }
+  function globusPlanText(every, d) {
+    if (!d || isNaN(d)) return 'Pick the date and time of the first run.';
+    const t = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const date = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    const day = d.toLocaleDateString('en-US', { weekday: 'long' });
+    if (every === 'once') return 'Once, on ' + date + ' at ' + t;
+    if (every === 'day') return 'Every day at ' + t + ', starting ' + date;
+    if (every === 'week') return 'Every ' + day + ' at ' + t + ', starting ' + date;
+    return 'Every 4 weeks on ' + day + ' at ' + t + ', starting ' + date;
+  }
+  function addGlobusPlanCard(parent, a) {
+    const card = el('div', 'askadma-run2');
+    parent.appendChild(card);
+    const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || '';
+    function header(pillText, pillCls) {
+      const head = el('div', 'askadma-rhead');
+      head.append(icon('fa-calendar-check'), el('h4', '', a.label || 'Scheduled backup'));
+      if (pillText) head.appendChild(el('span', 'askadma-pill' + (pillCls ? ' ' + pillCls : ''), pillText));
+      return head;
+    }
+    function route() {
+      const dl = el('dl', 'askadma-gkv');
+      [['From', `${a.source_name} · ${a.source_path}`], ['To', `${a.destination_name} · ${a.destination_path}`]].forEach(([k, v]) => {
+        dl.append(el('dt', '', k), el('dd', '', v)); });
+      return dl;
+    }
+    function proposal(errorText, needsLogin) {
+      card.textContent = '';
+      card.append(header('Waiting for you', ''), route());
+      const form = el('div', 'askadma-gform');
+      const every = el('select');
+      [['once', 'Once'], ['day', 'Every day'], ['week', 'Every week'], ['4weeks', 'Every 4 weeks (monthly)']].forEach(([v, t]) => {
+        const o = el('option', '', t); o.value = v; every.appendChild(o); });
+      every.value = a.every || 'week';
+      const first = el('input'); first.type = 'datetime-local';
+      first.value = a.first || gLocalInput(globusFirstRun(a));
+      const l1 = el('label'); l1.append(document.createTextNode('How often'), every);
+      const l2 = el('label'); l2.append(document.createTextNode('First run' + (tz ? ' (' + tz + ')' : '')), first);
+      form.append(l1, l2);
+      const when = el('div', 'askadma-pd askadma-gwhen'); when.setAttribute('aria-live', 'polite');
+      const sync = () => { when.textContent = globusPlanText(every.value, new Date(first.value)); };
+      every.addEventListener('change', sync); first.addEventListener('input', sync); sync();
+      const changed = el('input'); changed.type = 'checkbox'; changed.checked = a.sync !== 'all';
+      const lab = el('label', 'askadma-pd'); lab.style.cssText = 'display:flex;gap:6px;align-items:center';
+      lab.append(changed, document.createTextNode('Only copy new or changed files'));
+      card.append(form, when, lab, el('div', 'askadma-pd', 'Globus runs it on its own, even when ADMA is off, and emails you after each run. Nothing is deleted on either side.'
+        + (a.checksum_note ? ' ' + a.checksum_note : '')));
+      const msg = el('div', 'askadma-pd'); msg.setAttribute('role', 'status');
+      if (errorText) { msg.textContent = errorText; msg.style.color = 'var(--askadma-red-dark)'; }
+      card.appendChild(msg);
+      const btns = el('div', 'askadma-buttons');
+      const saveBtn = smallButton('Save schedule', 'fa-calendar-check', needsLogin ? '' : 'primary', submit);
+      if (needsLogin) btns.appendChild(smallButton('Connect Globus', 'fa-plug', 'primary', () => openGlobusConnect((ok) => { if (ok) submit(); })));
+      btns.append(saveBtn, smallButton('Cancel', 'fa-times', '', () => { a.dismissed = true; save(); dismissed(); }));
+      card.appendChild(btns);
+      async function submit() {
+        const d = new Date(first.value);
+        if (!first.value || isNaN(d)) { msg.textContent = 'Pick the date and time of the first run.'; return; }
+        saveBtn.disabled = true; msg.style.color = ''; msg.textContent = 'Saving the schedule in Globus…';
+        a.every = every.value; a.first = first.value; a.sync = changed.checked ? 'mtime' : 'all';
+        const res = await studioRequest('/api/askadma/globus/plans/', 'POST', { source: a.source, source_path: a.source_path,
+          destination: a.destination, destination_path: a.destination_path, label: a.label, sync: a.sync, is_folder: a.is_folder,
+          every: a.every, start: d.toISOString(), tz: tz, when_text: globusPlanText(a.every, d) });
+        if (res.error) { proposal(res.error, !!res.needs_login); return; }
+        a.plan_id = res.plan_id; a.when_text = res.when_text; save(); saved(res);
+      }
+    }
+    function dismissed() {
+      card.textContent = '';
+      card.append(header('Not scheduled', ''), route(), el('div', 'askadma-pd', 'You cancelled this. Nothing was scheduled.'));
+    }
+    function saved(p) {
+      card.textContent = '';
+      if (!p) { card.append(header('Removed', ''), route(), el('div', 'askadma-pd', 'This schedule was deleted.')); return; }
+      card.append(header(p.state_label || 'Scheduled', p.state === 'scheduled' || p.state === 'running' ? 'ok' : 'busy'), route(),
+                  el('div', 'askadma-pd askadma-gwhen', p.when_text || a.when_text || ''));
+      if (p.next_run) card.appendChild(el('div', 'askadma-pd', 'Next run: ' + new Date(p.next_run * 1000).toLocaleString('en-US',
+        { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })));
+      if (p.last && p.last.summary) card.appendChild(el('div', 'askadma-pd', 'Last run: ' + p.last.summary));
+      const btns = el('div', 'askadma-buttons');
+      btns.appendChild(smallButton('Manage on the Connectors page', 'fa-plug', '', () => { window.location.href = '/connectors/'; }));
+      card.appendChild(btns);
+    }
+    async function load() {
+      const res = await studioRequest('/api/askadma/globus/plans/', 'GET');
+      if (!document.body.contains(card)) return;
+      if (res.error) { saved({ state_label: 'Scheduled', when_text: a.when_text }); return; }
+      saved((res.plans || []).find((x) => x.plan_id === a.plan_id) || null);
+    }
+    if (a.plan_id) { card.append(header('Checking…', 'busy'), route()); load(); }
     else if (a.dismissed) dismissed();
     else proposal('');
   }
@@ -1184,6 +1302,7 @@
         else if (a.type === 'show_detections') addPhoto(turn, a);
         else if (a.type === 'confirm_run') addRunCard(turn, a);
         else if (a.type === 'confirm_globus') addGlobusCard(turn, a);
+        else if (a.type === 'confirm_globus_plan') addGlobusPlanCard(turn, a);
         else if (a.type === 'show_runs') addRunsList(turn);
       } catch (e) {}
     });
@@ -1274,7 +1393,7 @@
       const actions = final.actions || [];
       const entry = { role: 'assistant', content: final.answer || '', steps, seconds: Math.round((Date.now() - started) / 1000),
                       suggestions: final.suggestions || [],
-                      display: actions.filter((a) => ['render_chart', 'show_gallery', 'show_detections', 'confirm_run', 'confirm_globus', 'show_runs'].includes(a.type)) };
+                      display: actions.filter((a) => ['render_chart', 'show_gallery', 'show_detections', 'confirm_run', 'confirm_globus', 'confirm_globus_plan', 'show_runs'].includes(a.type)) };
       conversation.push(entry); save(); renderEntry(entry);
       msgs.scrollTop = msgs.scrollHeight;
       const viewerAction = actions.filter((a) => a.type === 'show_detections').pop();

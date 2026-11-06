@@ -36,5 +36,5 @@ def connectors_view(request):
         "onedrive": onedrive_status(),
         "globus_configured": G.configured(),
         "globus_sides": [("src", "From", "Folder or file to copy, e.g. /~/ADAPT/Test101/"),
-                         ("dst", "To", "Destination folder, e.g. /attic/<group>/adapt_weekly/")],
+                         ("dst", "To", "Destination folder, e.g. /attic/<group>/<user>/adapt_weekly/")],
     })

@@ -46,6 +46,24 @@
     .conn-badge.done { background: #e6f4ea; color: #1e6b3a; }
     .conn-badge.failed { background: #fde8e8; color: #a10e0e; }
     .conn-badge.quiet { background: #eef0ee; color: #4d5650; }
+    .conn-badge.warn { background: #fff4d6; color: #7a5200; }
+    .g-lbl { display: block; font-size: .76rem; font-weight: 600; color: #4d5650; margin: 8px 0 3px; }
+    .g-lbl:first-of-type { margin-top: 0; }
+    .g-plan { background: #f8faf9; border: 1px solid #cfe3de; border-radius: 10px; padding: 10px 12px; }
+    .g-whenhead { font-size: .78rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #5d6660; }
+    .g-whencard { display: flex; gap: 12px; align-items: flex-start; height: 100%; margin: 0; padding: 12px 14px; cursor: pointer;
+                  background: #fff; border: 1.5px solid #dfe5e1; border-radius: 10px; transition: border-color .15s, background .15s, box-shadow .15s; }
+    .g-whencard > i { font-size: 1.35rem; color: #8a948e; margin-top: 2px; width: 1.5rem; text-align: center; }
+    .g-whencard strong { display: block; font-size: .93rem; color: #22312a; }
+    .g-whencard small { display: block; font-size: .8rem; line-height: 1.35; color: #5d6660; }
+    .g-whencard:hover { border-color: #9fc9c0; }
+    .btn-check:checked + .g-whencard { border-color: #0f766e; background: #f0f8f6; box-shadow: 0 0 0 3px rgba(15, 118, 110, .12); }
+    .btn-check:checked + .g-whencard > i { color: #0f766e; }
+    .btn-check:focus-visible + .g-whencard { outline: 2px solid #0f766e; outline-offset: 2px; }
+    .g-plan .g-lbl { margin-top: 0; }
+    .g-plantext { font-weight: 600; color: #22312a; }
+    .g-acts { white-space: nowrap; }
+    .g-acts .btn { margin: 2px 0 2px 4px; }
     .conn-empty { color: #6c757d; font-size: .9rem; padding: 14px 0 4px; }
     .conn-note { font-size: .82rem; color: #8a5a00; }
     .conn-foot { font-size: .85rem; color: #6c757d; }
@@ -157,7 +175,7 @@
 
                 <p class="conn-what mt-3 mb-1">
                     Ask ADMA can browse your Globus collections and copy data between them, for example to back up
-                    ADAPT to HCC Attic. Globus checks every copied file, and nothing is ever deleted. You can also ask
+                    ADAPT to HCC Attic. Globus reports every file it copies, and nothing is ever deleted. You can also ask
                     in the chat, for example <em>"Copy the Test101 folder to my Attic backup folder with Globus"</em>.
                 </p>
                 <p class="small text-muted mb-0" id="globus-msg" role="status" aria-live="polite"></p>
@@ -180,14 +198,16 @@
                         <div class="col-md-6">
                             <div class="g-side" data-side="{{ side }}">
                                 <div class="g-title mb-2">{{ title }}</div>
+                                <span class="g-lbl">Collection</span>
                                 <select class="form-select form-select-sm g-coll" aria-label="{{ title }} collection">
                                     <option value="">Choose a collection…</option>
                                 </select>
                                 <div class="input-group input-group-sm mt-2">
-                                    <input type="text" class="form-control g-find" placeholder="Find a collection, e.g. hcc#attic" aria-label="Find a collection by name">
+                                    <input type="text" class="form-control g-find" placeholder="Or type a collection name, e.g. hcc#swan" aria-label="{{ title }}: find a collection by name">
                                     <button class="btn btn-outline-secondary g-findbtn" type="button"><i class="fas fa-search me-1"></i>Find</button>
                                 </div>
-                                <div class="input-group input-group-sm mt-2">
+                                <span class="g-lbl">Folder</span>
+                                <div class="input-group input-group-sm">
                                     <input type="text" class="form-control g-path" placeholder="{{ hint }}" aria-label="{{ title }} folder">
                                     <button class="btn btn-outline-secondary g-browse" type="button"><i class="fas fa-folder-open me-1"></i>Browse</button>
                                 </div>
@@ -197,6 +217,44 @@
                         {% endfor %}
                     </div>
                     <div class="small text-muted mt-2">The contents of the folder you copy go into the destination folder.</div>
+                    <div class="g-whenhead mt-4 mb-2" id="g-when-title">When should it run?</div>
+                    <div class="row g-2" role="radiogroup" aria-labelledby="g-when-title">
+                        <div class="col-sm-6">
+                            <input type="radio" class="btn-check" name="g-when" id="g-when-now" value="now" checked>
+                            <label class="g-whencard" for="g-when-now">
+                                <i class="fas fa-play-circle" aria-hidden="true"></i>
+                                <span><strong>Copy now</strong><small>One copy, starting right away.</small></span>
+                            </label>
+                        </div>
+                        <div class="col-sm-6">
+                            <input type="radio" class="btn-check" name="g-when" id="g-when-plan" value="plan">
+                            <label class="g-whencard" for="g-when-plan">
+                                <i class="fas fa-calendar-alt" aria-hidden="true"></i>
+                                <span><strong>On a schedule</strong><small>Repeats every day, week or 4 weeks, or runs once later. Best for backups.</small></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="g-plan mt-2" id="g-plan" hidden>
+                        <div class="row g-2">
+                            <div class="col-sm-5 col-lg-4">
+                                <label class="g-lbl" for="g-every">How often</label>
+                                <select class="form-select form-select-sm" id="g-every">
+                                    <option value="once">Once</option>
+                                    <option value="day">Every day</option>
+                                    <option value="week" selected>Every week</option>
+                                    <option value="4weeks">Every 4 weeks (monthly)</option>
+                                </select>
+                            </div>
+                            <div class="col-sm-7 col-lg-5">
+                                <label class="g-lbl" for="g-first">First run, in your time (<span id="g-tz"></span>)</label>
+                                <input type="datetime-local" class="form-control form-control-sm" id="g-first">
+                            </div>
+                        </div>
+                        <div class="small mt-2 g-plantext" id="g-plan-text" aria-live="polite"></div>
+                        <div class="small text-muted mt-1">Globus runs it on its own, even when ADMA is off, and emails you after each run.
+                            Each run copies into the same folder and never deletes anything.
+                            Globus repeats at a fixed interval, so after a daylight-saving change it runs an hour earlier or later.</div>
+                    </div>
                     <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
                         <div class="form-check mb-0">
                             <input class="form-check-input" type="checkbox" id="g-changed" checked>
@@ -207,6 +265,11 @@
                         <button type="button" class="btn btn-danger btn-sm ms-md-auto" id="g-start"><i class="fas fa-play me-1"></i>Start copy</button>
                     </div>
                     <p class="small mt-2 mb-0" id="g-form-msg" role="status" aria-live="polite"></p>
+
+                    <div class="d-flex align-items-center justify-content-between mt-4 mb-1">
+                        <h6 class="mb-0">Your scheduled backups</h6>
+                    </div>
+                    <div id="globus-plans"><div class="conn-empty">Loading…</div></div>
 
                     <div class="d-flex align-items-center justify-content-between mt-4 mb-1">
                         <h6 class="mb-0">Your Globus copies</h6>
@@ -420,6 +483,27 @@
     const GLOBUS_ON = {{ globus_configured|yesno:"true,false" }};
     const G_ACTIVE = ['active', 'inactive'];
     const G_LABELS = { active: 'Copying', inactive: 'Paused', succeeded: 'Done', failed: 'Failed', cancelled: 'Cancelled', unknown: 'Unknown' };
+    const isPath = (v) => /^[\/~]/.test(v);
+    const TZ = (Intl.DateTimeFormat().resolvedOptions().timeZone) || '';
+    const pad = (n) => String(n).padStart(2, '0');
+    const localInput = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    function planText(every, d) {
+        if (!d || isNaN(d)) return 'Pick the date and time of the first run.';
+        const t = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const date = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+        const day = d.toLocaleDateString('en-US', { weekday: 'long' });
+        if (every === 'once') return 'Once, on ' + date + ' at ' + t;
+        if (every === 'day') return 'Every day at ' + t + ', starting ' + date;
+        if (every === 'week') return 'Every ' + day + ' at ' + t + ', starting ' + date;
+        return 'Every 4 weeks on ' + day + ' at ' + t + ', starting ' + date;
+    }
+    function whenLocal(ts) {
+        return ts ? new Date(ts * 1000).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    }
+    const PLAN_CLS = { scheduled: 'active', running: 'active', retrying: 'warn', paused: 'quiet', needs_ok: 'warn', ended: 'quiet', gone: 'failed' };
+    const LAST_LABELS = { succeeded: ['Done', 'done'], failed: ['Failed', 'failed'], active: ['Copying', 'active'], inactive: ['Paused', 'warn'],
+                          cancelled: ['Cancelled', 'quiet'], unknown: ['Ran', 'quiet'] };
+    let pendingPlan = false;
     let gTimer = null, gBusy = false, gLoaded = false, gCollections = [];
 
     function size(n) {
@@ -431,7 +515,14 @@
     function gMsg(text) { const m = $('g-form-msg'); if (m) m.textContent = text || ''; }
     function globusConnect() {
         if (window.AskADMA && window.AskADMA.globusConnect) {
-            window.AskADMA.globusConnect(() => refreshGlobus(true));
+            window.AskADMA.globusConnect((ok) => {
+                refreshGlobus(true);
+                if (ok && pendingPlan) { pendingPlan = false; startCopy($('g-start')); }
+                document.querySelectorAll('#globus-connected .g-side').forEach((side) => {
+                    const panel = side.querySelector('.g-browser');
+                    if (panel.dataset.needs === '1') browse(side);
+                });
+            });
         } else {
             $('globus-msg').textContent = 'The sign-in window could not open. Reload the page and try again.';
         }
@@ -503,37 +594,66 @@
         fillAll();
         gLoaded = true;
     }
+    function selectedName(side) {
+        const sel = side.querySelector('.g-coll');
+        return sel.value ? (sel.options[sel.selectedIndex] || {}).text || '' : '';
+    }
     async function findCollection(side) {
-        const q = side.querySelector('.g-find').value.trim();
-        if (!q) { gMsg('Type part of a collection name, for example hcc#attic.'); return; }
+        const box = side.querySelector('.g-find'), q = box.value.trim();
+        if (!q) { gMsg('Type part of a collection name, for example hcc#swan.'); return false; }
+        if (isPath(q)) {   // a folder typed into the collection box
+            side.querySelector('.g-path').value = q;
+            box.value = '';
+            gMsg('That looks like a folder, so it is now in the Folder box. Type a collection name (for example hcc#swan) in the box above it.');
+            return false;
+        }
         gMsg('Searching Globus…');
         const data = await api('/api/askadma/globus/collections/?q=' + encodeURIComponent(q));
-        if (data.error) { gMsg(data.error); if (data.needs_login) refreshGlobus(); return; }
+        if (data.error) { gMsg(data.error); if (data.needs_login) refreshGlobus(); return false; }
         const found = data.collections || [];
-        if (!found.length) { gMsg('No Globus collection matches "' + q + '".'); return; }
+        if (!found.length) { gMsg('No Globus collection matches "' + q + '".'); return false; }
         found.forEach((f) => { if (!gCollections.some((c) => c.id === f.id)) gCollections.push(Object.assign({}, f, { group: 'search' })); });
         fillAll();
-        side.querySelector('.g-coll').value = found[0].id;
-        side.querySelector('.g-path').value = '';
+        const pick = found.find((c) => c.name.toLowerCase() === q.toLowerCase()) || found[0];
+        side.querySelector('.g-coll').value = pick.id;
         side.querySelector('.g-browser').hidden = true;
-        gMsg(found.length === 1 ? 'Found ' + found[0].name + '.' : 'Found ' + found.length + ' collections. The first one is selected; pick another from the list if needed.');
+        gMsg(found.length === 1 || pick.name.toLowerCase() === q.toLowerCase() ? 'Found ' + pick.name + '.'
+            : 'Found ' + found.length + ' collections; ' + pick.name + ' is selected. Pick another from the list if needed.');
+        return true;
+    }
+    async function ensureCollection(side) {
+        // a name typed in the find box but not searched yet: search it now instead of using the old choice
+        const q = side.querySelector('.g-find').value.trim();
+        if (!q || selectedName(side).toLowerCase().includes(q.toLowerCase())) return true;
+        return findCollection(side);
     }
     async function browse(side, path) {
-        const coll = side.querySelector('.g-coll').value, panel = side.querySelector('.g-browser');
+        const panel = side.querySelector('.g-browser');
         const isSource = side.dataset.side === 'src';
-        if (!coll) { gMsg('Choose a collection first.'); return; }
+        if (!path && !(await ensureCollection(side))) return;
+        const coll = side.querySelector('.g-coll').value;
+        if (!coll) { gMsg('Choose a collection first, or type its name and click Find.'); return; }
         gMsg('');
         panel.hidden = false;
+        panel.dataset.needs = '';
         panel.textContent = '';
         panel.appendChild(node('div', 'conn-empty px-2', 'Loading…'));
         const start = path || side.querySelector('.g-path').value.trim() || '/~/';
-        const data = await api('/api/askadma/globus/ls/?collection=' + encodeURIComponent(coll) + '&path=' + encodeURIComponent(start.replace(/[^/]+$/, '') || start));
+        const data = await api('/api/askadma/globus/ls/?nearest=1&collection=' + encodeURIComponent(coll) + '&path=' + encodeURIComponent(start.replace(/[^/]+$/, '') || start));
         panel.textContent = '';
         if (data.error) {
             const note = node('div', 'conn-note p-2', data.error);
             panel.appendChild(note);
-            if (data.needs_login) note.appendChild(node('div', 'mt-2')).appendChild(button('Connect Globus', 'fa-plug', 'btn-danger', globusConnect));
+            if (data.needs_login) {
+                panel.dataset.needs = '1';
+                note.appendChild(node('div', 'mt-2')).appendChild(button('Connect Globus', 'fa-plug', 'btn-danger', globusConnect));
+            }
             return;
+        }
+        if (data.missing) {
+            panel.appendChild(node('div', 'conn-note px-2 pt-2', isSource
+                ? data.missing + ' does not exist. Showing the closest folder that does.'
+                : data.missing + ' does not exist yet. That is fine: Globus creates it when the copy starts. Showing the folder it will go in.'));
         }
         const here = (data.path || '/~/').replace(/\/?$/, '/');
         const top = node('div', 'g-here');
@@ -572,22 +692,135 @@
     }
     async function startCopy(btn) {
         const src = document.querySelector('.g-side[data-side=src]'), dst = document.querySelector('.g-side[data-side=dst]');
+        if (!(await ensureCollection(src)) || !(await ensureCollection(dst))) return;
         const body = {
             source: src.querySelector('.g-coll').value, source_path: src.querySelector('.g-path').value.trim(),
             destination: dst.querySelector('.g-coll').value, destination_path: dst.querySelector('.g-path').value.trim(),
             label: $('g-label').value.trim(), sync: $('g-changed').checked ? 'mtime' : 'all'
         };
-        if (!body.source || !body.destination) { gMsg('Choose a collection on both sides.'); return; }
-        if (!body.source_path || !body.destination_path) { gMsg('Choose what to copy and where it should go. Browse helps you pick the folders.'); return; }
+        if (!body.source || !body.destination) { gMsg('Choose a collection on both sides, or type its name and click Find.'); return; }
+        if (!body.source_path) { gMsg('Enter the folder or file to copy in the From side\'s Folder box. Browse helps you pick it.'); return; }
+        if (!body.destination_path) { gMsg('Enter a destination folder in the To side\'s Folder box. It can be a new folder; Globus creates it.'); return; }
         body.is_folder = body.source_path.endsWith('/');
         if (!body.destination_path.endsWith('/')) body.destination_path += '/';
+        const scheduled = $('g-when-plan').checked;
+        if (scheduled) {
+            const first = new Date($('g-first').value);
+            if (!$('g-first').value || isNaN(first)) { gMsg('Pick the date and time of the first run.'); return; }
+            Object.assign(body, { every: $('g-every').value, start: first.toISOString(), tz: TZ,
+                                  when_text: planText($('g-every').value, first) });
+        }
         btn.disabled = true;
-        gMsg('Starting the copy…');
-        const res = await api('/api/askadma/globus/copy/', 'POST', body);
+        gMsg(scheduled ? 'Checking both sides, then saving the schedule in Globus…' : 'Checking both sides, then starting the copy…');
+        const res = await api(scheduled ? '/api/askadma/globus/plans/' : '/api/askadma/globus/copy/', 'POST', body);
         btn.disabled = false;
-        if (res.error) { gMsg(res.error); if (res.needs_login) refreshGlobus(); return; }
-        gMsg('Started. Globus is copying now; you can follow it below or in Ask ADMA.');
+        if (res.error) {
+            gMsg(res.error);
+            if (res.needs_login) {
+                pendingPlan = scheduled;
+                const m = $('g-form-msg');
+                m.appendChild(document.createTextNode(' '));
+                m.appendChild(button('Connect Globus', 'fa-plug', 'btn-danger', globusConnect));
+                refreshGlobus();
+            }
+            return;
+        }
+        gMsg((scheduled ? 'Saved. Globus will run it ' + (res.when_text || '').replace(/^\w/, (c) => c.toLowerCase()) + '. It is listed under Your scheduled backups.'
+                        : 'Started. Globus is copying now; you can follow it below or in Ask ADMA.')
+             + (res.checksum_note ? ' ' + res.checksum_note : ''));
         refreshGlobus(false);
+    }
+    function syncWhen() {
+        const scheduled = $('g-when-plan').checked;
+        $('g-plan').hidden = !scheduled;
+        $('g-start').innerHTML = scheduled ? '<i class="fas fa-calendar-check me-1"></i>Save schedule' : '<i class="fas fa-play me-1"></i>Start copy';
+        if (scheduled && !$('g-first').value) {
+            const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(2, 0, 0, 0);
+            $('g-first').value = localInput(d);
+        }
+        $('g-plan-text').textContent = planText($('g-every').value, new Date($('g-first').value));
+    }
+    async function planAction(id, action, btn, retried) {
+        btn.disabled = true;
+        const res = await api('/api/askadma/globus/plan/' + encodeURIComponent(id) + '/', 'POST', { action: action });
+        btn.disabled = false;
+        if (res.error) {
+            if (res.needs_login && !retried && window.AskADMA && window.AskADMA.globusConnect) {
+                window.AskADMA.globusConnect((ok) => { if (ok) planAction(id, action, btn, true); else refreshGlobus(true); });
+                return;
+            }
+            $('globus-plans-msg') && ($('globus-plans-msg').textContent = res.error);
+            return;
+        }
+        if (action === 'run_now') gMsg('Started a copy now with the same settings. It is listed under Your Globus copies.');
+        if (action === 'delete') gMsg(res.message || 'Schedule deleted.');
+        refreshGlobus(false);
+    }
+    function renderPlans(rows, error) {
+        const box = $('globus-plans');
+        box.textContent = '';
+        const msg = node('div', 'small mb-1 conn-note', error || '');
+        msg.id = 'globus-plans-msg';
+        box.appendChild(msg);
+        if (error) return;
+        if (!rows.length) {
+            box.appendChild(node('div', 'conn-empty', 'No scheduled backups yet. Choose On a schedule above, or ask Ask ADMA, for example "back up Test101 to Attic every Sunday at 2 AM".'));
+            return;
+        }
+        const wrap = node('div', 'table-responsive');
+        const table = node('table', 'table table-sm conn-runs mb-0');
+        const hr = node('tr');
+        ['Backup', 'Schedule', 'Last run', 'Status', ''].forEach((t) => hr.appendChild(node('th', '', t)));
+        const head = node('thead'); head.appendChild(hr);
+        const body = node('tbody');
+        rows.forEach((p) => {
+            const tr = node('tr');
+            tr.dataset.plan = p.plan_id;
+            const name = node('td');
+            name.appendChild(node('div', 'fw-semibold', p.name || 'Backup'));
+            name.appendChild(node('div', 'g-route', (p.source_name || '') + ' ' + (p.source_path || '') + '  →  ' + (p.destination_name || '') + ' ' + (p.destination_path || '')));
+            const sch = node('td');
+            sch.appendChild(node('div', '', p.when_text || ''));
+            if (p.next_run) sch.appendChild(node('div', 'small text-muted', 'Next: ' + whenLocal(p.next_run)));
+            const last = node('td');
+            if (p.last) {
+                const [ll, lc] = p.last.warning ? ['Retrying', 'warn'] : (LAST_LABELS[p.last.status] || [p.last.status, 'quiet']);
+                const top = node('div');
+                top.appendChild(node('span', 'conn-badge ' + lc, ll));
+                if (p.last.when) top.appendChild(node('span', 'small text-muted ms-2', whenLocal(p.last.when)));
+                last.append(top, node('div', 'small text-muted mt-1', p.last.summary || ''));
+                if (p.last.globus_url) {
+                    const a = node('a', 'small', 'Open in Globus');
+                    a.href = p.last.globus_url; a.target = '_blank'; a.rel = 'noopener';
+                    last.appendChild(a);
+                }
+            } else {
+                last.appendChild(node('span', 'small text-muted', 'Not run yet'));
+            }
+            const st = node('td');
+            st.appendChild(node('span', 'conn-badge ' + (PLAN_CLS[p.state] || 'quiet'), p.state_label || p.state));
+            const act = node('td', 'text-end g-acts');
+            const live = ['scheduled', 'running', 'retrying'].includes(p.state);
+            if (p.state !== 'gone') act.appendChild(button('Run now', 'fa-play', 'btn-outline-secondary', function () { planAction(p.plan_id, 'run_now', this); }));
+            if (live) act.appendChild(button('Pause', 'fa-pause', 'btn-outline-secondary', function () { planAction(p.plan_id, 'pause', this); }));
+            if (p.state === 'paused' || p.state === 'needs_ok') act.appendChild(button(p.state === 'needs_ok' ? 'Approve and resume' : 'Resume', 'fa-redo', 'btn-outline-success', function () { planAction(p.plan_id, 'resume', this); }));
+            const del = button('Delete', 'fa-trash', 'btn-outline-danger', function () {
+                if (this.dataset.sure !== '1') {
+                    this.dataset.sure = '1';
+                    this.textContent = 'Click again to delete';
+                    setTimeout(() => { if (document.body.contains(this)) { this.dataset.sure = ''; this.innerHTML = '<i class="fas fa-trash me-1"></i>Delete'; } }, 5000);
+                    return;
+                }
+                planAction(p.plan_id, 'delete', this);
+            });
+            del.title = 'Deletes the schedule only. Nothing already copied is removed.';
+            act.appendChild(del);
+            tr.append(name, sch, last, st, act);
+            body.appendChild(tr);
+        });
+        table.append(head, body);
+        wrap.appendChild(table);
+        box.appendChild(wrap);
     }
     async function cancelCopy(id, btn) {
         btn.disabled = true;
@@ -614,8 +847,8 @@
             const name = node('td');
             name.appendChild(node('div', 'fw-semibold', t.label || 'Globus copy'));
             name.appendChild(node('div', 'g-route', (t.source_name || '') + ' ' + (t.source_path || '') + '  →  ' + (t.destination_name || '') + ' ' + (t.destination_path || '')));
-            const cls = t.status === 'succeeded' ? 'done' : t.status === 'failed' ? 'failed' : t.status === 'active' ? 'active' : 'quiet';
-            const st = node('td'); st.appendChild(node('span', 'conn-badge ' + cls, G_LABELS[t.status] || t.status));
+            const cls = t.warning ? 'warn' : t.status === 'succeeded' ? 'done' : t.status === 'failed' ? 'failed' : t.status === 'active' ? 'active' : 'quiet';
+            const st = node('td'); st.appendChild(node('span', 'conn-badge ' + cls, t.warning ? 'Retrying' : (G_LABELS[t.status] || t.status)));
             const prog = node('td');
             const bar = node('div', 'g-bar'); const fill = node('span'); fill.style.width = (t.percent || 0) + '%'; bar.appendChild(fill);
             bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', t.percent || 0); bar.setAttribute('aria-valuemin', 0); bar.setAttribute('aria-valuemax', 100);
@@ -643,6 +876,9 @@
             const st = await api('/api/askadma/globus/status/');
             if (renderGlobusConnection(st)) {
                 if (!gLoaded || reload) await loadCollections();
+                const pl = await api('/api/askadma/globus/plans/');
+                renderPlans(pl.plans || [], pl.error || '');
+                if (pl.plans && pl.plans.some((x) => ['running', 'retrying'].includes(x.state))) soon = true;
                 const data = await api('/api/askadma/globus/tasks/');
                 if (data.error) {
                     $('globus-tasks').textContent = '';
@@ -650,7 +886,7 @@
                 } else {
                     const rows = data.tasks || [];
                     renderTasks(rows);
-                    soon = rows.some((t) => G_ACTIVE.includes(t.status));
+                    soon = soon || rows.some((t) => G_ACTIVE.includes(t.status));
                 }
             }
         } finally {
@@ -666,6 +902,10 @@
             side.querySelector('.g-coll').addEventListener('change', () => { side.querySelector('.g-browser').hidden = true; side.querySelector('.g-path').value = ''; });
         });
         $('g-start').addEventListener('click', function () { startCopy(this); });
+        $('g-tz').textContent = TZ || 'your computer\'s time zone';
+        ['g-when-now', 'g-when-plan'].forEach((id) => $(id).addEventListener('change', syncWhen));
+        $('g-every').addEventListener('change', syncWhen);
+        $('g-first').addEventListener('input', syncWhen);
         $('globus-refresh').addEventListener('click', () => refreshGlobus(true));
         window.addEventListener('askadma:globus', () => refreshGlobus(true));
         document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshGlobus(false); });

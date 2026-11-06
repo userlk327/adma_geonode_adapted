@@ -66,6 +66,8 @@ urlpatterns = [
     path('api/askadma/globus/ls/', askadma_globus.globus_ls_view, name='askadma_globus_ls'),
     path('api/askadma/globus/copy/', askadma_globus.globus_copy_view, name='askadma_globus_copy'),
     path('api/askadma/globus/tasks/', askadma_globus.globus_tasks_view, name='askadma_globus_tasks'),
+    path('api/askadma/globus/plans/', askadma_globus.globus_plans_view, name='askadma_globus_plans'),
+    path('api/askadma/globus/plan/<str:plan_id>/', askadma_globus.globus_plan_view, name='askadma_globus_plan'),
     path('api/askadma/globus/task/<str:task_id>/', askadma_globus.globus_task_view, name='askadma_globus_task'),
     path('api/search/', views.search_api, name='search_api'),
     
