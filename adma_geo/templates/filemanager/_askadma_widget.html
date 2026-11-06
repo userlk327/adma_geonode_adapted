@@ -203,6 +203,11 @@
   .askadma-sbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .askadma-duo { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 6px 0; }
   .askadma-duo .fas { font-size: 40px; color: #2f7d4f; }
+  .askadma-gbar { height: 6px; background: #eef0ed; border-radius: 99px; overflow: hidden; }
+  .askadma-gbar > span { display: block; height: 100%; background: #0f766e; transition: width .4s ease; }
+  .askadma-gkv { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12.5px; }
+  .askadma-gkv dt { color: var(--askadma-muted); font-weight: 600; } .askadma-gkv dd { margin: 0; overflow-wrap: anywhere; }
+  .askadma-gsteps { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--askadma-muted); line-height: 1.5; }
   @media (prefers-reduced-motion: reduce) { .askadma-prog li.now .askadma-pi { animation: none; } }
   .askadma-hl { outline: 3px solid var(--askadma-amber) !important; outline-offset: 2px; border-radius: 6px; background: #fff7df !important; }
 
@@ -531,6 +536,7 @@
     const bar = $('askadma-swanbar');
     if (!bar) return;
     const st = await swanStatus();
+    try { window.dispatchEvent(new CustomEvent('askadma:swan', { detail: st })); } catch (e) {}
     bar.textContent = '';
     if (!st || !st.available || (!st.connected && (!st.state || st.state === 'none'))) { bar.hidden = true; return; }
     bar.hidden = false;
@@ -605,6 +611,143 @@
     }
     box.onkeydown = (e) => { if (e.key === 'Escape') close(false); };
     form('');
+  }
+  // ---------- Globus: sign-in window and copy card ----------
+  function openGlobusConnect(onDone) {
+    let box = $('askadma-swan');
+    if (!box) { box = el('div'); box.id = 'askadma-swan'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+      document.body.appendChild(box); }
+    box.setAttribute('aria-label', 'Connect Globus');
+    const prev = document.activeElement;
+    function close(ok) {
+      box.hidden = true; box.textContent = ''; if (prev && prev.focus) prev.focus();
+      try { window.dispatchEvent(new CustomEvent('askadma:globus', { detail: { connected: !!ok } })); } catch (e) {}
+      if (onDone) onDone(ok);
+    }
+    function view(nodes) { box.textContent = ''; const d = el('div', 'askadma-sbox'); nodes.forEach((n) => d.appendChild(n)); box.appendChild(d); box.hidden = false; return d; }
+    function title() { const h = el('h3'); h.append(icon('fa-exchange-alt'), document.createTextNode('Connect Globus')); return h; }
+    function row(buttons) { const b = el('div', 'askadma-sbtns'); buttons.forEach((x) => b.appendChild(x)); return b; }
+    box.onkeydown = (e) => { if (e.key === 'Escape') close(false); };
+    view([title(), el('p', 'askadma-snote', 'Getting the Globus sign-in ready…')]);
+    (async function () {
+      const start = await studioRequest('/api/askadma/globus/login/', 'POST', {});
+      if (start.error) { const c = smallButton('Close', 'fa-times', '', () => close(false)); view([title(), el('p', 'askadma-serr', start.error), row([c])]); c.focus(); return; }
+      form(start);
+    })();
+    function form(start) {
+      const code = el('input'); code.type = 'text'; code.autocomplete = 'off'; code.spellcheck = false; code.placeholder = 'Paste the code here';
+      const open = smallButton('Open Globus sign-in', 'fa-external-link-alt', 'primary', () => { window.open(start.auth_url, '_blank', 'noopener'); code.focus(); });
+      const err = el('p', 'askadma-serr', '');
+      const go = smallButton('Connect', 'fa-plug', 'primary', submit);
+      const steps = el('ol', 'askadma-gsteps');
+      ['Click Open Globus sign-in. It opens in a new tab.',
+       'Sign in with your university account, and with HCC too if Globus asks.',
+       'Globus then shows a code. Copy it, come back here and paste it below.'].forEach((t) => steps.appendChild(el('li', '', t)));
+      const lab = el('label'); lab.append(document.createTextNode('Code from Globus'), code);
+      const nodes = [title()];
+      if (start.reason) nodes.push(el('p', 'askadma-snote', start.reason));
+      nodes.push(el('p', 'askadma-snote', 'ADMA never sees your password. Copies run under your own Globus account, and you can disconnect any time on the Connectors page.'),
+                 steps, open, lab, err, row([smallButton('Cancel', 'fa-times', '', () => close(false)), go]));
+      view(nodes);
+      open.focus();
+      code.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+      async function submit() {
+        if (!code.value.trim()) { err.textContent = 'Paste the code Globus shows after you sign in.'; return; }
+        go.disabled = true;
+        const res = await studioRequest('/api/askadma/globus/code/', 'POST', { code: code.value.trim() });
+        if (res.error) { go.disabled = false; err.textContent = res.error; return; }
+        const ok = el('div', 'askadma-duo');
+        ok.append(icon('fa-check-circle'), el('div', 'askadma-pt', 'Connected to Globus'),
+                  el('p', 'askadma-snote', res.identity ? `Signed in as ${res.identity}.` : 'You are signed in.'));
+        const done = smallButton('Done', 'fa-check', 'primary', () => close(true));
+        view([title(), ok, row([done])]); done.focus();
+      }
+    }
+  }
+  const GLOBUS_ACTIVE = ['active', 'inactive'];
+  const GLOBUS_LABELS = { active: ['Copying', 'busy'], inactive: ['Paused', 'busy'], succeeded: ['Done', 'ok'], failed: ['Failed', 'bad'], cancelled: ['Cancelled', ''] };
+  function addGlobusCard(parent, a) {
+    const card = el('div', 'askadma-run2');
+    parent.appendChild(card);
+    function header(pillText, pillCls) {
+      const head = el('div', 'askadma-rhead');
+      head.append(icon('fa-exchange-alt'), el('h4', '', a.label || 'Copy with Globus'));
+      if (pillText) head.appendChild(el('span', 'askadma-pill' + (pillCls ? ' ' + pillCls : ''), pillText));
+      return head;
+    }
+    function route() {
+      const dl = el('dl', 'askadma-gkv');
+      [['From', `${a.source_name} · ${a.source_path}`], ['To', `${a.destination_name} · ${a.destination_path}`]].forEach(([k, v]) => {
+        dl.append(el('dt', '', k), el('dd', '', v)); });
+      return dl;
+    }
+    function proposal(errorText, needsLogin) {
+      card.textContent = '';
+      card.append(header('Waiting for you', ''), route());
+      const changed = el('input'); changed.type = 'checkbox'; changed.checked = a.sync !== 'all';
+      const lab = el('label', 'askadma-pd'); lab.style.cssText = 'display:flex;gap:6px;align-items:center';
+      lab.append(changed, document.createTextNode('Only copy new or changed files'));
+      card.append(lab, el('div', 'askadma-pd', 'Globus checks every copied file. Nothing is deleted on either side.'));
+      const msg = el('div', 'askadma-pd'); msg.setAttribute('role', 'status');
+      if (errorText) { msg.textContent = errorText; msg.style.color = 'var(--askadma-red-dark)'; }
+      card.appendChild(msg);
+      const btns = el('div', 'askadma-buttons');
+      if (needsLogin) btns.appendChild(smallButton('Connect Globus', 'fa-plug', 'primary', () => openGlobusConnect((ok) => { if (ok) proposal(''); })));
+      const startBtn = smallButton('Start copy', 'fa-play', needsLogin ? '' : 'primary', async () => {
+        startBtn.disabled = true; msg.style.color = ''; msg.textContent = 'Starting the copy…';
+        a.sync = changed.checked ? 'mtime' : 'all';
+        const res = await studioRequest('/api/askadma/globus/copy/', 'POST', { source: a.source, source_path: a.source_path,
+          destination: a.destination, destination_path: a.destination_path, label: a.label, sync: a.sync, is_folder: a.is_folder });
+        if (res.error) { proposal(res.error, !!res.needs_login); return; }
+        a.task_id = res.task_id; save(); follow(res);
+      });
+      const cancel = smallButton('Cancel', 'fa-times', '', () => { a.dismissed = true; save(); dismissed(); });
+      btns.append(startBtn, cancel);
+      card.appendChild(btns);
+    }
+    function dismissed() {
+      card.textContent = '';
+      card.append(header('Not started', ''), route(), el('div', 'askadma-pd', 'You cancelled this copy. Nothing was copied.'));
+    }
+    let timer = null;
+    function follow(st) {
+      clearTimeout(timer);
+      if (!document.body.contains(card)) return;
+      card.textContent = '';
+      if (st && st.error) {
+        card.append(header('Unknown', ''), route(), el('div', 'askadma-pd', st.error));
+        const btns = el('div', 'askadma-buttons');
+        if (st.needs_login) btns.appendChild(smallButton('Connect Globus', 'fa-plug', 'primary', () => openGlobusConnect((ok) => { if (ok) poll(); })));
+        btns.appendChild(smallButton('Check again', 'fa-sync-alt', '', poll));
+        card.appendChild(btns);
+        return;
+      }
+      const [label, cls] = GLOBUS_LABELS[st.status] || [st.status || 'Starting', 'busy'];
+      card.append(header(label, cls), route());
+      const bar = el('div', 'askadma-gbar'); const fill = el('span'); fill.style.width = (st.percent || 0) + '%'; bar.appendChild(fill);
+      bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', st.percent || 0); bar.setAttribute('aria-valuemin', 0); bar.setAttribute('aria-valuemax', 100);
+      const sum = el('div', 'askadma-pd', st.summary || ''); sum.setAttribute('role', 'status');
+      card.append(bar, sum);
+      const btns = el('div', 'askadma-buttons');
+      if (GLOBUS_ACTIVE.includes(st.status)) {
+        const stop = smallButton('Cancel copy', 'fa-stop', '', async () => {
+          stop.disabled = true;
+          const res = await studioRequest('/api/askadma/globus/task/' + encodeURIComponent(a.task_id) + '/', 'POST', { action: 'cancel' });
+          follow(res.error ? Object.assign({}, st, { summary: res.error }) : res);
+        });
+        btns.appendChild(stop);
+      }
+      if (st.globus_url) btns.appendChild(smallButton('Open in Globus', 'fa-external-link-alt', '', () => window.open(st.globus_url, '_blank', 'noopener')));
+      card.appendChild(btns);
+      if (GLOBUS_ACTIVE.includes(st.status) || !st.status) timer = setTimeout(poll, 5000);
+    }
+    async function poll() {
+      const st = await studioRequest('/api/askadma/globus/task/' + encodeURIComponent(a.task_id) + '/', 'GET');
+      follow(st);
+    }
+    if (a.task_id) { card.append(header('Checking…', 'busy'), route()); poll(); }
+    else if (a.dismissed) dismissed();
+    else proposal('');
   }
   // ---------- ADMA Studio / Swan run card ----------
   const RUN_ACTIVE = ['queued', 'uploading', 'pending', 'running', 'fetching', 'importing'];
@@ -1040,6 +1183,7 @@
         else if (a.type === 'show_gallery') addGallery(turn, a);
         else if (a.type === 'show_detections') addPhoto(turn, a);
         else if (a.type === 'confirm_run') addRunCard(turn, a);
+        else if (a.type === 'confirm_globus') addGlobusCard(turn, a);
         else if (a.type === 'show_runs') addRunsList(turn);
       } catch (e) {}
     });
@@ -1130,7 +1274,7 @@
       const actions = final.actions || [];
       const entry = { role: 'assistant', content: final.answer || '', steps, seconds: Math.round((Date.now() - started) / 1000),
                       suggestions: final.suggestions || [],
-                      display: actions.filter((a) => ['render_chart', 'show_gallery', 'show_detections', 'confirm_run', 'show_runs'].includes(a.type)) };
+                      display: actions.filter((a) => ['render_chart', 'show_gallery', 'show_detections', 'confirm_run', 'confirm_globus', 'show_runs'].includes(a.type)) };
       conversation.push(entry); save(); renderEntry(entry);
       msgs.scrollTop = msgs.scrollHeight;
       const viewerAction = actions.filter((a) => a.type === 'show_detections').pop();
@@ -1154,7 +1298,9 @@
   renderAll();
   msgs.scrollTop = msgs.scrollHeight;
   applyPending();
-  window.AskADMA = { open: openPanel, close: closePanel, ask: ask };
+  window.AskADMA = { open: openPanel, close: closePanel, ask: ask,
+                     swanConnect: openSwanConnect, swanStatus: swanStatus, refreshSwan: refreshSwanBar,
+                     globusConnect: openGlobusConnect };
 })();
 </script>
 <!-- ===== end Ask ADMA side panel ===== -->

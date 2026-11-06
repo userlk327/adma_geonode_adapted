@@ -1969,3 +1969,12 @@ try:
     STUDIO_ERROR = None
 except Exception as _e:  # the other tools keep working without ADMA Studio
     STUDIO_ERROR = str(_e)
+
+# ---------------------------------------------------- Globus (askadma_globus.py) --
+try:
+    from . import askadma_globus as _globus
+    TOOL_FUNCS.update(_globus.TOOL_FUNCS)
+    TOOL_DEFS = TOOL_DEFS + list(_globus.TOOL_DEFS)
+    GLOBUS_ERROR = None
+except Exception as _e:  # the other tools keep working without Globus
+    GLOBUS_ERROR = str(_e)

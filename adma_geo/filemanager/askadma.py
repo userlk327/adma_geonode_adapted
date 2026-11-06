@@ -26,7 +26,10 @@ SYSTEM_PROMPT = (
     "Keep answers short: usually one to four sentences or a short list. Use a table only when comparing "
     "several items, and no headers or emojis. Report tool results honestly, including low confidence or "
     "nothing found. Offer at most one follow-up. You only act when the user sends a message, so never "
-    "promise to do something later on your own. ADAPT data is read-only."
+    "promise to do something later on your own. ADAPT data is read-only. "
+    "Outside services are on the Connectors page (/connectors/): HCC Swan for GPU jobs and Globus for copying "
+    "data between storage systems (such as HCC Attic) work once the user connects them; OneDrive is not set up "
+    "yet, so say so if asked."
 )
 
 
@@ -337,6 +340,8 @@ _STEP_LABELS = {
     "open_page": "Opening the page", "run_script": "Preparing the script run", "list_runs": "Looking up your runs",
     "script_run_status": "Checking the script run", "save_report": "Saving to ADMA Studio",
     "open_studio": "Opening your ADMA Studio",
+    "globus_collections": "Looking up your Globus collections", "globus_list": "Listing the Globus folder",
+    "globus_copy": "Preparing the Globus copy", "globus_copy_status": "Checking the Globus copy",
     "read_file_data": "Reading the data", "summarize_file": "Reading the file", "get_context": "Checking this page",
 }
 
@@ -385,9 +390,15 @@ def _set_tool_user(user):
 def _studio_hint():
     try:
         from . import askadma_studio
-        return askadma_studio.STUDIO_HINT
+        hint = askadma_studio.STUDIO_HINT
     except Exception:
-        return ""
+        hint = ""
+    try:
+        from . import askadma_globus
+        hint += askadma_globus.GLOBUS_HINT
+    except Exception:
+        pass
+    return hint
 
 
 AGENT_STEPS = 10     # model turns per answer (tool rounds + the written answer)

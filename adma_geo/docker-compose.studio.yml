@@ -13,6 +13,9 @@ services:
     volumes:
       - adma_studio_jobs:/jobs
       - adma_studio_runs:/studio_runs
+    environment:
+      # Globus connector: the Client UUID of ADMA's app at app.globus.org/settings/developers (not secret)
+      GLOBUS_CLIENT_ID: ${GLOBUS_CLIENT_ID:-}
 
   studio-runner:
     build:

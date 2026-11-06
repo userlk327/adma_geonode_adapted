@@ -5,6 +5,8 @@ from . import map_views
 from . import askadma
 from . import askadma_studio
 from . import askadma_swan
+from . import connectors
+from . import askadma_globus
 
 app_name = 'filemanager'
 
@@ -21,6 +23,7 @@ urlpatterns = [
     # Authenticated URLs
     path('dashboard/', views.dashboard, name='dashboard'),
     path('tools/', views.ToolsListView.as_view(), name='tools_list'),
+    path('connectors/', connectors.connectors_view, name='connectors'),
     path('tools/seeding/', views.SeedingToolView.as_view(), name='seeding_tool'),
     path('tools/shape-to-json/', views.ShapeToJsonToolView.as_view(), name='shape_to_json_tool'),
     path('tools/si/', views.SIToolView.as_view(), name='si_tool'),
@@ -55,6 +58,15 @@ urlpatterns = [
     path('api/askadma/swan/status/', askadma_swan.swan_status_view, name='askadma_swan_status'),
     path('api/askadma/swan/connect/', askadma_swan.swan_connect_view, name='askadma_swan_connect'),
     path('api/askadma/swan/disconnect/', askadma_swan.swan_disconnect_view, name='askadma_swan_disconnect'),
+    path('api/askadma/globus/status/', askadma_globus.globus_status_view, name='askadma_globus_status'),
+    path('api/askadma/globus/login/', askadma_globus.globus_login_view, name='askadma_globus_login'),
+    path('api/askadma/globus/code/', askadma_globus.globus_code_view, name='askadma_globus_code'),
+    path('api/askadma/globus/disconnect/', askadma_globus.globus_disconnect_view, name='askadma_globus_disconnect'),
+    path('api/askadma/globus/collections/', askadma_globus.globus_collections_view, name='askadma_globus_collections'),
+    path('api/askadma/globus/ls/', askadma_globus.globus_ls_view, name='askadma_globus_ls'),
+    path('api/askadma/globus/copy/', askadma_globus.globus_copy_view, name='askadma_globus_copy'),
+    path('api/askadma/globus/tasks/', askadma_globus.globus_tasks_view, name='askadma_globus_tasks'),
+    path('api/askadma/globus/task/<str:task_id>/', askadma_globus.globus_task_view, name='askadma_globus_task'),
     path('api/search/', views.search_api, name='search_api'),
     
     # Seeding Tool endpoints

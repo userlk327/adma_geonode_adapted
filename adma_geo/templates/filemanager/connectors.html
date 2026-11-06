@@ -1,0 +1,681 @@
+{% extends 'base.html' %}
+
+{% block title %}Connectors - ADMA{% endblock %}
+
+{% block extra_css %}
+<style>
+    .conn-card { border: 1px solid #e3e6e3; border-radius: 12px; box-shadow: 0 2px 8px rgba(31, 38, 34, .05); }
+    .conn-icon { width: 48px; height: 48px; border-radius: 12px; flex: none; display: flex; align-items: center;
+        justify-content: center; font-size: 1.35rem; color: #fff; }
+    .conn-icon.swan { background: linear-gradient(135deg, #d00000, #9d0208); }
+    .conn-icon.onedrive { background: linear-gradient(135deg, #0a66c2, #084c91); }
+    .conn-icon.globus { background: linear-gradient(135deg, #0f766e, #115e59); }
+    .g-side { background: #f8faf9; border: 1px solid #e3e8e5; border-radius: 10px; padding: 12px; height: 100%; }
+    .g-side .g-title { font-size: .78rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #5d6660; }
+    .g-browser { margin-top: 8px; background: #fff; border: 1px solid #e3e8e5; border-radius: 8px; max-height: 260px;
+        overflow: auto; }
+    .g-here { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #eef1ef;
+        position: sticky; top: 0; background: #fff; }
+    .g-here code { font-size: .8rem; color: #3d4540; overflow-wrap: anywhere; }
+    .g-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: none;
+        padding: 5px 10px; font-size: .88rem; color: #1f2622; }
+    .g-item:hover:not(:disabled) { background: #f1f5f3; }
+    .g-item:disabled { color: #8a948e; }
+    .g-item .fa-folder { color: #e0a100; }
+    .g-item .g-size { margin-left: auto; font-size: .78rem; color: #6c757d; }
+    .g-bar { height: 6px; background: #eef0ee; border-radius: 99px; overflow: hidden; min-width: 120px; }
+    .g-bar > span { display: block; height: 100%; background: #0f766e; }
+    .g-route { font-size: .8rem; color: #5d6660; overflow-wrap: anywhere; }
+    .conn-pill { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem; font-weight: 600;
+        padding: 3px 10px; border-radius: 999px; background: #eef0ee; color: #4d5650; }
+    .conn-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #9aa39d; }
+    .conn-pill.on { background: #e6f4ea; color: #1e6b3a; }
+    .conn-pill.on::before { background: #2f9e57; }
+    .conn-pill.busy { background: #fff4d6; color: #7a5600; }
+    .conn-pill.busy::before { background: #e0a100; }
+    .conn-pill.off::before { background: #9aa39d; }
+    .conn-what { color: #3d4540; }
+    .conn-needs { background: #f6f8fb; border: 1px solid #e1e7f0; border-radius: 10px; padding: 12px 14px; }
+    .conn-needs ul { margin: 6px 0 0; padding-left: 1.1rem; }
+    .conn-runs { font-size: .9rem; }
+    .conn-runs th { font-weight: 600; color: #5d6660; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+    .conn-runs td, .conn-runs th { vertical-align: middle; }
+    .conn-runs .btn, .conn-runs td.nw { white-space: nowrap; }
+    .conn-badge { font-size: .76rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+    .conn-badge.active { background: #e7f0ff; color: #0b4fa8; }
+    .conn-badge.done { background: #e6f4ea; color: #1e6b3a; }
+    .conn-badge.failed { background: #fde8e8; color: #a10e0e; }
+    .conn-badge.quiet { background: #eef0ee; color: #4d5650; }
+    .conn-empty { color: #6c757d; font-size: .9rem; padding: 14px 0 4px; }
+    .conn-note { font-size: .82rem; color: #8a5a00; }
+    .conn-foot { font-size: .85rem; color: #6c757d; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h2><i class="fas fa-plug text-danger me-2"></i>Connectors</h2>
+    <p class="text-muted mb-0">Link outside services to ADMA. Once a service is connected, Ask ADMA can use it for you.</p>
+</div>
+
+<div class="row g-4">
+    <!-- HCC Swan -->
+    <div class="col-lg-7">
+        <div class="card conn-card h-100" id="conn-swan">
+            <div class="card-body p-4">
+                <div class="d-flex align-items-start gap-3 flex-wrap">
+                    <div class="conn-icon swan" aria-hidden="true"><i class="fas fa-bolt"></i></div>
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <h5 class="mb-0">HCC Swan</h5>
+                            <span class="conn-pill" id="swan-pill">Checking…</span>
+                        </div>
+                        <div class="text-muted small">GPU computing at the Holland Computing Center ({{ swan_host }})</div>
+                    </div>
+                    <div class="d-flex gap-2" id="swan-actions"></div>
+                </div>
+
+                <p class="conn-what mt-3 mb-1">
+                    Ask ADMA can run your scripts on Swan's GPUs and bring the results back to ADMA Studio.
+                    To start one, ask in the chat, for example <em>"Run gpu_check.py on Swan"</em>.
+                </p>
+                <p class="small text-muted mb-0" id="swan-msg" role="status" aria-live="polite">
+                    {% if not swan_available %}ADMA's server has no ssh program, so it cannot connect to Swan.{% endif %}
+                </p>
+
+                <div class="d-flex align-items-center justify-content-between mt-4 mb-1">
+                    <h6 class="mb-0">Your Swan runs</h6>
+                    <button type="button" class="btn btn-sm btn-link text-decoration-none p-0" id="swan-refresh">
+                        <i class="fas fa-sync-alt me-1"></i>Refresh
+                    </button>
+                </div>
+                <div id="swan-runs"><div class="conn-empty">Loading…</div></div>
+
+                <div class="conn-foot mt-3">
+                    <i class="fas fa-terminal me-1"></i>Need a terminal on Swan? Use
+                    <a href="https://swan-ood.unl.edu/pun/sys/dashboard" target="_blank" rel="noopener">HCC Open OnDemand</a>.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- OneDrive -->
+    <div class="col-lg-5">
+        <div class="card conn-card h-100" id="conn-onedrive">
+            <div class="card-body p-4">
+                <div class="d-flex align-items-start gap-3 flex-wrap">
+                    <div class="conn-icon onedrive" aria-hidden="true"><i class="fas fa-cloud"></i></div>
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <h5 class="mb-0">OneDrive</h5>
+                            {% if onedrive.ready %}
+                            <span class="conn-pill off">Not connected</span>
+                            {% else %}
+                            <span class="conn-pill off">Not set up yet</span>
+                            {% endif %}
+                        </div>
+                        <div class="text-muted small">Files in your UNL Microsoft 365 account</div>
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" disabled
+                            title="{% if onedrive.ready %}Coming soon{% else %}OneDrive is not set up on this ADMA yet{% endif %}">
+                        <i class="fas fa-plug me-1"></i>Connect
+                    </button>
+                </div>
+
+                <p class="conn-what mt-3">
+                    You will be able to pick files from your OneDrive, and Ask ADMA can read and analyze them.
+                    Results are saved to ADMA Studio. Nothing in your OneDrive is changed.
+                </p>
+
+                {% if not onedrive.ready %}
+                <div class="conn-needs small">
+                    <strong>To turn this on, ADMA needs:</strong>
+                    <ul>
+                        {% for need in onedrive.needs %}<li>{{ need }}</li>{% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Globus -->
+    <div class="col-12">
+        <div class="card conn-card" id="conn-globus">
+            <div class="card-body p-4">
+                <div class="d-flex align-items-start gap-3 flex-wrap">
+                    <div class="conn-icon globus" aria-hidden="true"><i class="fas fa-exchange-alt"></i></div>
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <h5 class="mb-0">Globus</h5>
+                            <span class="conn-pill{% if not globus_configured %} off{% endif %}" id="globus-pill">{% if globus_configured %}Checking…{% else %}Not set up yet{% endif %}</span>
+                        </div>
+                        <div class="text-muted small">Copy data between storage systems, such as ADAPT and HCC Attic</div>
+                    </div>
+                    <div class="d-flex gap-2" id="globus-actions"></div>
+                </div>
+
+                <p class="conn-what mt-3 mb-1">
+                    Ask ADMA can browse your Globus collections and copy data between them, for example to back up
+                    ADAPT to HCC Attic. Globus checks every copied file, and nothing is ever deleted. You can also ask
+                    in the chat, for example <em>"Copy the Test101 folder to my Attic backup folder with Globus"</em>.
+                </p>
+                <p class="small text-muted mb-0" id="globus-msg" role="status" aria-live="polite"></p>
+
+                {% if not globus_configured %}
+                <div class="conn-needs small mt-3">
+                    <strong>To turn this on, ADMA needs a Globus app ID.</strong> It is free and takes about 5 minutes:
+                    <ol class="mb-0 mt-1 ps-3">
+                        <li>Go to <a href="https://app.globus.org/settings/developers" target="_blank" rel="noopener">app.globus.org/settings/developers</a>
+                            and choose <em>Register a thick client or script that will be installed and run by users on their devices</em>.</li>
+                        <li>Name it ADMA, register it, and copy its <em>Client UUID</em>.</li>
+                        <li>Add <code>GLOBUS_CLIENT_ID=</code> followed by that UUID to ADMA's <code>.env</code> file, and restart ADMA.</li>
+                    </ol>
+                </div>
+                {% else %}
+                <div id="globus-connected" hidden>
+                    <h6 class="mt-4 mb-2">Copy with Globus</h6>
+                    <div class="row g-3">
+                        {% for side, title, hint in globus_sides %}
+                        <div class="col-md-6">
+                            <div class="g-side" data-side="{{ side }}">
+                                <div class="g-title mb-2">{{ title }}</div>
+                                <select class="form-select form-select-sm g-coll" aria-label="{{ title }} collection">
+                                    <option value="">Choose a collection…</option>
+                                </select>
+                                <div class="input-group input-group-sm mt-2">
+                                    <input type="text" class="form-control g-find" placeholder="Find a collection, e.g. hcc#attic" aria-label="Find a collection by name">
+                                    <button class="btn btn-outline-secondary g-findbtn" type="button"><i class="fas fa-search me-1"></i>Find</button>
+                                </div>
+                                <div class="input-group input-group-sm mt-2">
+                                    <input type="text" class="form-control g-path" placeholder="{{ hint }}" aria-label="{{ title }} folder">
+                                    <button class="btn btn-outline-secondary g-browse" type="button"><i class="fas fa-folder-open me-1"></i>Browse</button>
+                                </div>
+                                <div class="g-browser" hidden></div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="small text-muted mt-2">The contents of the folder you copy go into the destination folder.</div>
+                    <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="checkbox" id="g-changed" checked>
+                            <label class="form-check-label" for="g-changed">Only copy new or changed files</label>
+                        </div>
+                        <input type="text" class="form-control form-control-sm" id="g-label" maxlength="120"
+                               placeholder="Name (optional), e.g. Weekly ADAPT backup" style="max-width: 320px" aria-label="Name for this copy">
+                        <button type="button" class="btn btn-danger btn-sm ms-md-auto" id="g-start"><i class="fas fa-play me-1"></i>Start copy</button>
+                    </div>
+                    <p class="small mt-2 mb-0" id="g-form-msg" role="status" aria-live="polite"></p>
+
+                    <div class="d-flex align-items-center justify-content-between mt-4 mb-1">
+                        <h6 class="mb-0">Your Globus copies</h6>
+                        <button type="button" class="btn btn-sm btn-link text-decoration-none p-0" id="globus-refresh">
+                            <i class="fas fa-sync-alt me-1"></i>Refresh
+                        </button>
+                    </div>
+                    <div id="globus-tasks"><div class="conn-empty">Loading…</div></div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const SWAN_AVAILABLE = {{ swan_available|yesno:"true,false" }};
+    const ACTIVE = ['awaiting_confirmation', 'queued', 'uploading', 'pending', 'running', 'fetching', 'importing'];
+    const LABELS = {
+        awaiting_confirmation: 'Waiting for your Run click', queued: 'Starting', uploading: 'Copying data to Swan',
+        pending: "In Swan's queue", running: 'Running', fetching: 'Bringing results back', importing: 'Saving results', done: 'Done',
+        failed: 'Failed', cancelled: 'Cancelled', expired: 'Expired'
+    };
+    const $ = (id) => document.getElementById(id);
+    let timer = null, busy = false;
+
+    function cookie(name) {
+        const m = document.cookie.match('(^|;)\\s*' + name + '=([^;]*)');
+        return m ? decodeURIComponent(m[2]) : '';
+    }
+    async function api(url, method, body) {
+        try {
+            const r = await fetch(url, { method: method || 'GET', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': cookie('csrftoken') },
+                body: body ? JSON.stringify(body) : undefined });
+            let data = {};
+            try { data = await r.json(); } catch (e) { data = {}; }
+            if (!r.ok && !data.error) data.error = 'The server answered ' + r.status + '.';
+            return data;
+        } catch (e) {
+            return { error: 'Could not reach ADMA. Check your connection and try again.' };
+        }
+    }
+    function node(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text !== undefined && text !== null) n.textContent = text;
+        return n;
+    }
+    function button(label, iconName, cls, onClick) {
+        const b = node('button', 'btn btn-sm ' + cls);
+        b.type = 'button';
+        const i = node('i', 'fas ' + iconName + ' me-1');
+        i.setAttribute('aria-hidden', 'true');
+        b.append(i, document.createTextNode(label));
+        b.addEventListener('click', onClick);
+        return b;
+    }
+    function duration(seconds) {
+        if (seconds === null || seconds === undefined) return '';
+        const s = Math.max(0, Math.round(seconds));
+        if (s < 60) return s + ' s';
+        const m = Math.round(s / 60);
+        if (m < 60) return m + ' min';
+        const h = Math.floor(m / 60), r = m % 60;
+        return r ? h + ' h ' + r + ' min' : h + ' h';
+    }
+    function when(ts) {
+        if (!ts) return '';
+        const d = new Date(ts * 1000), now = new Date();
+        const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        if (d.toDateString() === now.toDateString()) return 'Today ' + time;
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
+    }
+    function basename(p) { return String(p || '').split('/').filter(Boolean).pop() || p || ''; }
+
+    // ---------------------------------------------------------------- connection
+    function openConnect() {
+        if (window.AskADMA && window.AskADMA.swanConnect) {
+            window.AskADMA.swanConnect(() => refresh());
+        } else {
+            $('swan-msg').textContent = 'The sign-in window could not open. Reload the page and try again.';
+        }
+    }
+    async function disconnect(btn) {
+        btn.disabled = true;
+        const res = await api('/api/askadma/swan/disconnect/', 'POST', {});
+        if (res.error) $('swan-msg').textContent = res.error;
+        if (window.AskADMA && window.AskADMA.refreshSwan) window.AskADMA.refreshSwan();
+        refresh();
+    }
+    function renderConnection(st) {
+        const pill = $('swan-pill'), actions = $('swan-actions'), msg = $('swan-msg');
+        actions.textContent = '';
+        pill.className = 'conn-pill';
+        if (!SWAN_AVAILABLE || (st && st.available === false)) {
+            pill.classList.add('off');
+            pill.textContent = 'Unavailable';
+            msg.textContent = "ADMA's server has no ssh program, so it cannot connect to Swan.";
+            return;
+        }
+        if (!st || st.error) {
+            pill.classList.add('off');
+            pill.textContent = 'Status unknown';
+            msg.textContent = (st && st.error) || 'Could not check the Swan connection.';
+            actions.appendChild(button('Connect', 'fa-plug', 'btn-danger', openConnect));
+            return;
+        }
+        if (st.connected) {
+            pill.classList.add('on');
+            pill.textContent = 'Connected';
+            msg.textContent = 'Signed in as ' + st.hcc_user + ' until ' + st.until + '. Your jobs run under your own HCC account.';
+            actions.appendChild(button('Disconnect', 'fa-unlink', 'btn-outline-secondary', function () { disconnect(this); }));
+        } else if (['starting', 'checking', 'duo'].includes(st.state)) {
+            pill.classList.add('busy');
+            pill.textContent = 'Connecting…';
+            msg.textContent = st.message || 'Signing in to Swan…';
+        } else {
+            pill.classList.add('off');
+            pill.textContent = 'Not connected';
+            msg.textContent = st.message || 'Sign in with your HCC account. ADMA uses your password only to log in to Swan and never stores it.';
+            actions.appendChild(button('Connect', 'fa-plug', 'btn-danger', openConnect));
+        }
+    }
+
+    // ---------------------------------------------------------------------- runs
+    async function cancelRun(runId, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Stopping…';
+        const res = await api('/api/askadma/studio/run/' + encodeURIComponent(runId) + '/', 'POST', { action: 'cancel' });
+        if (res.error) $('swan-msg').textContent = res.error;
+        refresh();
+    }
+    function badgeFor(run) {
+        const s = run.status;
+        const cls = s === 'done' ? 'done' : s === 'failed' ? 'failed' : ACTIVE.includes(s) ? 'active' : 'quiet';
+        let text = LABELS[s] || s;
+        if (s === 'uploading' && run.swan && run.swan.copy_percent) text += ' · ' + run.swan.copy_percent + '%';
+        return node('span', 'conn-badge ' + cls, text);
+    }
+    function renderRuns(runs) {
+        const box = $('swan-runs');
+        box.textContent = '';
+        if (!runs.length) {
+            box.appendChild(node('div', 'conn-empty', 'No Swan runs yet. Ask ADMA in the chat to run a script on Swan, and it will show up here.'));
+            return;
+        }
+        const wrap = node('div', 'table-responsive');
+        const table = node('table', 'table table-sm conn-runs mb-0');
+        const head = node('thead'), hr = node('tr');
+        ['Script', 'Status', 'Started', 'Time', 'GPU', ''].forEach((t) => hr.appendChild(node('th', '', t)));
+        head.appendChild(hr);
+        const body = node('tbody');
+        runs.forEach((run) => {
+            const tr = node('tr');
+            const name = node('td');
+            name.appendChild(node('div', 'fw-semibold', basename(run.script)));
+            if (run.swan && run.swan.needs_connection) {
+                name.appendChild(node('div', 'conn-note', 'Connect again so ADMA can follow this job.'));
+            } else if (run.status === 'failed' && run.error_message) {
+                name.appendChild(node('div', 'conn-note', run.error_message));
+            }
+            const st = node('td'); st.appendChild(badgeFor(run));
+            const gpu = (run.swan && (run.swan.gpu || '')) || '';
+            const act = node('td', 'text-end');
+            if (run.output_url) {
+                const a = node('a', 'btn btn-sm btn-outline-secondary', 'Results');
+                a.href = run.output_url;
+                act.appendChild(a);
+            } else if (ACTIVE.includes(run.status)) {
+                act.appendChild(button('Cancel', 'fa-stop', 'btn-outline-danger', function () { cancelRun(run.run_id, this); }));
+            }
+            tr.append(name, st, node('td', 'nw', when(run.started || run.created)), node('td', 'nw', duration(run.seconds)),
+                      node('td', 'small', gpu), act);
+            body.appendChild(tr);
+        });
+        table.append(head, body);
+        wrap.appendChild(table);
+        box.appendChild(wrap);
+    }
+
+    // ------------------------------------------------------------------- refresh
+    async function refresh() {
+        if (busy) return;
+        busy = true;
+        clearTimeout(timer);
+        let soon = false;
+        try {
+            const st = SWAN_AVAILABLE ? await api('/api/askadma/swan/status/') : null;
+            renderConnection(st);
+            soon = !!(st && ['starting', 'checking', 'duo'].includes(st.state));
+            const data = await api('/api/askadma/studio/runs/');
+            if (data.error) {
+                $('swan-runs').textContent = '';
+                $('swan-runs').appendChild(node('div', 'conn-empty', 'Could not load your runs: ' + data.error));
+            } else {
+                const runs = (data.runs || []).filter((r) => r.where === 'swan');
+                renderRuns(runs);
+                soon = soon || runs.some((r) => ACTIVE.includes(r.status));
+            }
+        } finally {
+            busy = false;
+            if (!document.hidden) timer = setTimeout(refresh, soon ? 8000 : 30000);
+        }
+    }
+
+    // -------------------------------------------------------------------- Globus
+    const GLOBUS_ON = {{ globus_configured|yesno:"true,false" }};
+    const G_ACTIVE = ['active', 'inactive'];
+    const G_LABELS = { active: 'Copying', inactive: 'Paused', succeeded: 'Done', failed: 'Failed', cancelled: 'Cancelled', unknown: 'Unknown' };
+    let gTimer = null, gBusy = false, gLoaded = false, gCollections = [];
+
+    function size(n) {
+        let v = Number(n || 0), i = 0;
+        const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+        return i ? v.toFixed(1) + ' ' + units[i] : v + ' bytes';
+    }
+    function gMsg(text) { const m = $('g-form-msg'); if (m) m.textContent = text || ''; }
+    function globusConnect() {
+        if (window.AskADMA && window.AskADMA.globusConnect) {
+            window.AskADMA.globusConnect(() => refreshGlobus(true));
+        } else {
+            $('globus-msg').textContent = 'The sign-in window could not open. Reload the page and try again.';
+        }
+    }
+    async function globusDisconnect(btn) {
+        btn.disabled = true;
+        const res = await api('/api/askadma/globus/disconnect/', 'POST', {});
+        if (res.error) $('globus-msg').textContent = res.error;
+        gLoaded = false;
+        refreshGlobus(true);
+    }
+    function renderGlobusConnection(st) {
+        const pill = $('globus-pill'), actions = $('globus-actions'), msg = $('globus-msg'), box = $('globus-connected');
+        actions.textContent = '';
+        pill.className = 'conn-pill';
+        if (!st || st.error) {
+            pill.classList.add('off');
+            pill.textContent = 'Status unknown';
+            msg.textContent = (st && st.error) || 'Could not check Globus.';
+            actions.appendChild(button('Connect', 'fa-plug', 'btn-danger', globusConnect));
+            if (box) box.hidden = true;
+            return false;
+        }
+        if (st.connected) {
+            pill.classList.add(st.needs ? 'busy' : 'on');
+            pill.textContent = st.needs ? 'Needs your OK' : 'Connected';
+            msg.textContent = st.needs ? st.needs.message
+                : 'Signed in as ' + (st.identity || 'you') + '. Copies run under your own Globus account.';
+            if (st.needs) actions.appendChild(button('Connect Globus', 'fa-plug', 'btn-danger', globusConnect));
+            actions.appendChild(button('Disconnect', 'fa-unlink', 'btn-outline-secondary', function () { globusDisconnect(this); }));
+            if (box) box.hidden = false;
+            return true;
+        }
+        pill.classList.add('off');
+        pill.textContent = 'Not connected';
+        msg.textContent = st.message && st.state !== 'none' ? st.message
+            : 'Sign in to Globus with your university account. ADMA never sees your password.';
+        actions.appendChild(button('Connect', 'fa-plug', 'btn-danger', globusConnect));
+        if (box) box.hidden = true;
+        return false;
+    }
+    function fillSelect(sel, list) {
+        const current = sel.value;
+        sel.textContent = '';
+        const first = node('option', '', 'Choose a collection…');
+        first.value = '';
+        sel.appendChild(first);
+        const groups = [['recently-used', 'Recently used'], ['my-endpoints', 'Yours'], ['shared-with-me', 'Shared with you'], ['search', 'Search results']];
+        groups.forEach(([g, label]) => {
+            const items = list.filter((c) => (c.group || 'search') === g);
+            if (!items.length) return;
+            const og = node('optgroup');
+            og.label = label;
+            items.forEach((c) => {
+                const o = node('option', '', c.name + (c.kind === 'personal' && c.online === false ? ' (offline)' : ''));
+                o.value = c.id;
+                og.appendChild(o);
+            });
+            sel.appendChild(og);
+        });
+        if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
+    }
+    function fillAll() { document.querySelectorAll('#globus-connected .g-coll').forEach((sel) => fillSelect(sel, gCollections)); }
+    async function loadCollections() {
+        const data = await api('/api/askadma/globus/collections/');
+        if (data.error) { gMsg(data.error); return; }
+        const found = gCollections.filter((c) => c.group === 'search');
+        gCollections = (data.collections || []).concat(found.filter((f) => !(data.collections || []).some((c) => c.id === f.id)));
+        fillAll();
+        gLoaded = true;
+    }
+    async function findCollection(side) {
+        const q = side.querySelector('.g-find').value.trim();
+        if (!q) { gMsg('Type part of a collection name, for example hcc#attic.'); return; }
+        gMsg('Searching Globus…');
+        const data = await api('/api/askadma/globus/collections/?q=' + encodeURIComponent(q));
+        if (data.error) { gMsg(data.error); if (data.needs_login) refreshGlobus(); return; }
+        const found = data.collections || [];
+        if (!found.length) { gMsg('No Globus collection matches "' + q + '".'); return; }
+        found.forEach((f) => { if (!gCollections.some((c) => c.id === f.id)) gCollections.push(Object.assign({}, f, { group: 'search' })); });
+        fillAll();
+        side.querySelector('.g-coll').value = found[0].id;
+        side.querySelector('.g-path').value = '';
+        side.querySelector('.g-browser').hidden = true;
+        gMsg(found.length === 1 ? 'Found ' + found[0].name + '.' : 'Found ' + found.length + ' collections. The first one is selected; pick another from the list if needed.');
+    }
+    async function browse(side, path) {
+        const coll = side.querySelector('.g-coll').value, panel = side.querySelector('.g-browser');
+        const isSource = side.dataset.side === 'src';
+        if (!coll) { gMsg('Choose a collection first.'); return; }
+        gMsg('');
+        panel.hidden = false;
+        panel.textContent = '';
+        panel.appendChild(node('div', 'conn-empty px-2', 'Loading…'));
+        const start = path || side.querySelector('.g-path').value.trim() || '/~/';
+        const data = await api('/api/askadma/globus/ls/?collection=' + encodeURIComponent(coll) + '&path=' + encodeURIComponent(start.replace(/[^/]+$/, '') || start));
+        panel.textContent = '';
+        if (data.error) {
+            const note = node('div', 'conn-note p-2', data.error);
+            panel.appendChild(note);
+            if (data.needs_login) note.appendChild(node('div', 'mt-2')).appendChild(button('Connect Globus', 'fa-plug', 'btn-danger', globusConnect));
+            return;
+        }
+        const here = (data.path || '/~/').replace(/\/?$/, '/');
+        const top = node('div', 'g-here');
+        top.appendChild(node('code', '', here));
+        const use = button('Use this folder', 'fa-check', 'btn-outline-success ms-auto', () => {
+            side.querySelector('.g-path').value = here;
+            panel.hidden = true;
+        });
+        top.appendChild(use);
+        panel.appendChild(top);
+        if (here !== '/') {
+            const up = node('button', 'g-item');
+            up.type = 'button';
+            up.append(node('i', 'fas fa-level-up-alt'), document.createTextNode('Up one folder'));
+            up.addEventListener('click', () => browse(side, here.replace(/[^/]+\/$/, '')));
+            panel.appendChild(up);
+        }
+        (data.items || []).forEach((item) => {
+            const b = node('button', 'g-item');
+            b.type = 'button';
+            const folder = item.kind === 'folder';
+            b.append(node('i', 'fas ' + (folder ? 'fa-folder' : 'fa-file')), document.createTextNode(item.name));
+            if (!folder) b.appendChild(node('span', 'g-size', size(item.size)));
+            if (folder) {
+                b.addEventListener('click', () => browse(side, here + item.name + '/'));
+            } else if (isSource) {
+                b.title = 'Copy just this file';
+                b.addEventListener('click', () => { side.querySelector('.g-path').value = here + item.name; panel.hidden = true; });
+            } else {
+                b.disabled = true;
+            }
+            panel.appendChild(b);
+        });
+        if (!(data.items || []).length) panel.appendChild(node('div', 'conn-empty px-2', 'This folder is empty.'));
+        if (data.more) panel.appendChild(node('div', 'conn-empty px-2', 'And ' + data.more.toLocaleString() + ' more not shown.'));
+    }
+    async function startCopy(btn) {
+        const src = document.querySelector('.g-side[data-side=src]'), dst = document.querySelector('.g-side[data-side=dst]');
+        const body = {
+            source: src.querySelector('.g-coll').value, source_path: src.querySelector('.g-path').value.trim(),
+            destination: dst.querySelector('.g-coll').value, destination_path: dst.querySelector('.g-path').value.trim(),
+            label: $('g-label').value.trim(), sync: $('g-changed').checked ? 'mtime' : 'all'
+        };
+        if (!body.source || !body.destination) { gMsg('Choose a collection on both sides.'); return; }
+        if (!body.source_path || !body.destination_path) { gMsg('Choose what to copy and where it should go. Browse helps you pick the folders.'); return; }
+        body.is_folder = body.source_path.endsWith('/');
+        if (!body.destination_path.endsWith('/')) body.destination_path += '/';
+        btn.disabled = true;
+        gMsg('Starting the copy…');
+        const res = await api('/api/askadma/globus/copy/', 'POST', body);
+        btn.disabled = false;
+        if (res.error) { gMsg(res.error); if (res.needs_login) refreshGlobus(); return; }
+        gMsg('Started. Globus is copying now; you can follow it below or in Ask ADMA.');
+        refreshGlobus(false);
+    }
+    async function cancelCopy(id, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Stopping…';
+        const res = await api('/api/askadma/globus/task/' + encodeURIComponent(id) + '/', 'POST', { action: 'cancel' });
+        if (res.error) gMsg(res.error);
+        refreshGlobus(false);
+    }
+    function renderTasks(rows) {
+        const box = $('globus-tasks');
+        box.textContent = '';
+        if (!rows.length) {
+            box.appendChild(node('div', 'conn-empty', 'No copies yet. Start one above, or ask Ask ADMA in the chat.'));
+            return;
+        }
+        const wrap = node('div', 'table-responsive');
+        const table = node('table', 'table table-sm conn-runs mb-0');
+        const hr = node('tr');
+        ['Copy', 'Status', 'Progress', 'Started', ''].forEach((t) => hr.appendChild(node('th', '', t)));
+        const head = node('thead'); head.appendChild(hr);
+        const body = node('tbody');
+        rows.forEach((t) => {
+            const tr = node('tr');
+            const name = node('td');
+            name.appendChild(node('div', 'fw-semibold', t.label || 'Globus copy'));
+            name.appendChild(node('div', 'g-route', (t.source_name || '') + ' ' + (t.source_path || '') + '  →  ' + (t.destination_name || '') + ' ' + (t.destination_path || '')));
+            const cls = t.status === 'succeeded' ? 'done' : t.status === 'failed' ? 'failed' : t.status === 'active' ? 'active' : 'quiet';
+            const st = node('td'); st.appendChild(node('span', 'conn-badge ' + cls, G_LABELS[t.status] || t.status));
+            const prog = node('td');
+            const bar = node('div', 'g-bar'); const fill = node('span'); fill.style.width = (t.percent || 0) + '%'; bar.appendChild(fill);
+            bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', t.percent || 0); bar.setAttribute('aria-valuemin', 0); bar.setAttribute('aria-valuemax', 100);
+            prog.append(bar, node('div', 'small text-muted mt-1', t.summary || ''));
+            const act = node('td', 'text-end');
+            if (G_ACTIVE.includes(t.status)) act.appendChild(button('Cancel', 'fa-stop', 'btn-outline-danger', function () { cancelCopy(t.task_id, this); }));
+            if (t.globus_url) {
+                const a = node('a', 'btn btn-sm btn-outline-secondary ms-1', 'Globus');
+                a.href = t.globus_url; a.target = '_blank'; a.rel = 'noopener'; a.title = 'Open this copy in Globus';
+                act.appendChild(a);
+            }
+            tr.append(name, st, prog, node('td', 'nw', when(t.requested)), act);
+            body.appendChild(tr);
+        });
+        table.append(head, body);
+        wrap.appendChild(table);
+        box.appendChild(wrap);
+    }
+    async function refreshGlobus(reload) {
+        if (!GLOBUS_ON || gBusy) return;
+        gBusy = true;
+        clearTimeout(gTimer);
+        let soon = false;
+        try {
+            const st = await api('/api/askadma/globus/status/');
+            if (renderGlobusConnection(st)) {
+                if (!gLoaded || reload) await loadCollections();
+                const data = await api('/api/askadma/globus/tasks/');
+                if (data.error) {
+                    $('globus-tasks').textContent = '';
+                    $('globus-tasks').appendChild(node('div', 'conn-empty', data.error));
+                } else {
+                    const rows = data.tasks || [];
+                    renderTasks(rows);
+                    soon = rows.some((t) => G_ACTIVE.includes(t.status));
+                }
+            }
+        } finally {
+            gBusy = false;
+            if (!document.hidden) gTimer = setTimeout(() => refreshGlobus(false), soon ? 8000 : 30000);
+        }
+    }
+    if (GLOBUS_ON) {
+        document.querySelectorAll('#globus-connected .g-side').forEach((side) => {
+            side.querySelector('.g-browse').addEventListener('click', () => browse(side));
+            side.querySelector('.g-findbtn').addEventListener('click', () => findCollection(side));
+            side.querySelector('.g-find').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); findCollection(side); } });
+            side.querySelector('.g-coll').addEventListener('change', () => { side.querySelector('.g-browser').hidden = true; side.querySelector('.g-path').value = ''; });
+        });
+        $('g-start').addEventListener('click', function () { startCopy(this); });
+        $('globus-refresh').addEventListener('click', () => refreshGlobus(true));
+        window.addEventListener('askadma:globus', () => refreshGlobus(true));
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshGlobus(false); });
+        refreshGlobus(true);
+    }
+
+    $('swan-refresh').addEventListener('click', refresh);
+    window.addEventListener('askadma:swan', () => refresh());
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+    refresh();
+})();
+</script>
+{% endblock %}
