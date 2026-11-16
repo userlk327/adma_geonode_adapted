@@ -11,16 +11,13 @@ import json
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.views.generic import ListView, DetailView, CreateView
-from django.http import JsonResponse, HttpResponseForbidden
+from django.views.generic import ListView, DetailView
+from django.core.exceptions import PermissionDenied
+from django.http import JsonResponse
 from django.db import models
 from django.views.decorators.http import require_http_methods
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
 from django.contrib import messages
 from django.db import transaction, IntegrityError
-from django.db import models
-from django.core.paginator import Paginator
 
 from .models import Map, MapLayer, File
 from .geoserver_layer_group_manager import LayerGroupManager
@@ -90,7 +87,7 @@ class MapDetailView(LoginRequiredMixin, DetailView):
         
         # Check permissions
         if not map_obj.is_public and map_obj.owner != self.request.user:
-            raise HttpResponseForbidden("You don't have permission to view this map.")
+            raise PermissionDenied("You don't have permission to view this map.")
         
         return map_obj
 
@@ -216,15 +213,6 @@ def create_map_view(request):
                     # Calculate and store the center point based on all file bounding boxes
                     map_obj.calculate_and_update_center()
                     
-                    # Generate embeddings for the new map
-                    try:
-                        from .tasks import generate_map_embedding_task
-                        generate_map_embedding_task.delay(str(map_obj.id))
-                    except Exception as e:
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.error(f"Failed to generate embeddings for map {map_obj.name}: {e}")
-                    
                     messages.success(request, f'Map "{map_name}" created successfully!')
                     return redirect('filemanager:map_detail', map_id=map_obj.id)
                 else:
@@ -245,6 +233,12 @@ def create_map_view(request):
             return redirect('filemanager:create_map')
 
 
+def _next_layer_order(map_obj):
+    """The layer_order that puts a new layer above the map's current top layer."""
+    max_order = map_obj.map_layers.aggregate(max_order=models.Max('layer_order'))['max_order']
+    return 0 if max_order is None else max_order + 1
+
+
 @login_required
 @require_http_methods(["POST"])
 def add_layer_to_map(request, map_id):
@@ -254,7 +248,9 @@ def add_layer_to_map(request, map_id):
         
         data = json.loads(request.body)
         file_id = data.get('file_id')
-        layer_order = data.get('layer_order', map_obj.layer_count)
+        layer_order = data.get('layer_order')
+        if layer_order is None:
+            layer_order = _next_layer_order(map_obj)
         
         file_obj = get_object_or_404(File, id=file_id)
         
@@ -300,6 +296,9 @@ def remove_layer_from_map(request, map_id, layer_id):
         # Update GeoServer Layer Group
         layer_group_manager = LayerGroupManager()
         success, message = layer_group_manager.update_layer_group(map_obj)
+        
+        # The map opens on the extent of the layers it still has
+        map_obj.calculate_and_update_center()
         
         if success:
             return JsonResponse({'success': True, 'message': 'Layer removed successfully'})
@@ -353,40 +352,6 @@ def check_map_name(request):
     
     exists = Map.objects.filter(name=map_name, owner=request.user).exists()
     return JsonResponse({'exists': exists})
-
-
-@login_required
-@require_http_methods(["POST"])
-def toggle_map_visibility(request, map_id):
-    """Toggle map visibility between private and public"""
-    try:
-        map_obj = get_object_or_404(Map, id=map_id, owner=request.user)
-        
-        import json
-        data = json.loads(request.body)
-        is_public = data.get('is_public', False)
-        
-        map_obj.is_public = is_public
-        map_obj.save(update_fields=['is_public'])
-        
-        # Regenerate embeddings since visibility changed
-        try:
-            from .tasks import generate_map_embedding_task
-            generate_map_embedding_task.delay(str(map_obj.id))
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to regenerate embeddings for map {map_obj.name}: {e}")
-        
-        status = 'public' if is_public else 'private'
-        return JsonResponse({
-            'success': True, 
-            'message': f'Map "{map_obj.name}" is now {status}',
-            'is_public': is_public
-        })
-        
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)})
 
 
 @login_required
@@ -461,13 +426,8 @@ def add_layers_to_map(request, map_id):
         if not selected_file_ids:
             return JsonResponse({'success': False, 'error': 'No files selected'})
         
-        # Get the current highest layer order
-        max_order = map_obj.map_layers.aggregate(
-            max_order=models.Max('layer_order')
-        )['max_order'] or -1
-        
         added_layers = []
-        layer_order = max_order + 1
+        layer_order = _next_layer_order(map_obj)
         
         with transaction.atomic():
             for file_id in selected_file_ids:
@@ -571,7 +531,13 @@ def update_layer_visibility(request, map_id, layer_id):
         
         layer.is_visible = visible
         layer.save(update_fields=['is_visible'])
-        
+
+        # The page hides the layer, so the Layer Group leaves it out too
+        layer_group_manager = LayerGroupManager()
+        success, message = layer_group_manager.update_layer_group(map_obj)
+        if not success:
+            return JsonResponse({'success': False, 'error': f'GeoServer error: {message}'})
+
         return JsonResponse({
             'success': True,
             'message': f'Layer visibility updated to {"visible" if visible else "hidden"}',
@@ -585,11 +551,12 @@ def update_layer_visibility(request, map_id, layer_id):
 @login_required
 @require_http_methods(["DELETE"])
 def delete_map(request, map_id):
-    """Delete a map"""
+    """Delete one of the user's maps. Errors come back as JSON with a 404 or 500 status, which the pages show."""
+    map_obj = Map.objects.filter(id=map_id, owner=request.user).first()
+    if map_obj is None:
+        return JsonResponse({'success': False, 'error': 'Map not found'}, status=404)
+    map_name = map_obj.name
     try:
-        map_obj = get_object_or_404(Map, id=map_id, owner=request.user)
-        map_name = map_obj.name
-        
         # Mark as deletion in progress to hide from queries
         map_obj.deletion_in_progress = True
         map_obj.save(update_fields=['deletion_in_progress'])
@@ -600,7 +567,9 @@ def delete_map(request, map_id):
         return JsonResponse({'success': True, 'message': f'Map "{map_name}" deleted successfully'})
         
     except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)})
+        # The map is still there, so list it again.
+        Map.objects.filter(pk=map_obj.pk).update(deletion_in_progress=False)
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @login_required

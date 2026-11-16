@@ -1,5 +1,6 @@
 from django.urls import path
 from django.views.generic import RedirectView
+from . import adapt_views
 from . import views
 from . import map_views
 from . import askadma
@@ -13,7 +14,8 @@ app_name = 'filemanager'
 urlpatterns = [
     # Public URLs
     path('', views.HomeView.as_view(), name='home'),
-    path('register/', views.RegisterView.as_view(), name='register'),
+    path('auth/check/', views.auth_check, name='auth_check'),
+    path('favicon.ico', views.favicon, name='favicon'),
     path('search/', views.SearchView.as_view(), name='search'),
     path('documentation/', views.DocumentationView.as_view(), name='documentation'),
     path('public/folder/<uuid:folder_id>/', views.public_folder_detail, name='public_folder_detail'),
@@ -31,6 +33,11 @@ urlpatterns = [
     path('file/<uuid:file_id>/', views.file_detail, name='file_detail'),
     path('file/<uuid:file_id>/download/', views.download_file, name='download_file'),
     path('file/<uuid:file_id>/map/', views.map_viewer, name='map_viewer'),
+
+    # The ADAPT share, by path (see adapt_share.folder_url and file_url)
+    path('adapt/', adapt_views.adapt_folder, name='adapt_root'),
+    path('adapt/browse/<path:rel>/', adapt_views.adapt_folder, name='adapt_folder'),
+    path('adapt/open/<path:rel>', adapt_views.adapt_open, name='adapt_open'),
     
     # Public map viewer
     path('public/file/<uuid:file_id>/map/', views.public_map_viewer, name='public_map_viewer'),
@@ -51,6 +58,7 @@ urlpatterns = [
     path('api/dashboard/stats/', views.dashboard_stats, name='dashboard_stats'),
     path('api/askadma/', askadma.askadma_view, name='askadma'),
     path('api/askadma/thumb/<uuid:file_id>/', askadma.askadma_thumb_view, name='askadma_thumb'),
+    path('api/askadma/thumb-adapt/', askadma.askadma_adapt_thumb_view, name='askadma_adapt_thumb'),
     path('api/askadma/studio/run/<str:run_id>/', askadma_studio.studio_run_view, name='askadma_studio_run'),
     path('api/askadma/studio/save/', askadma_studio.studio_save_view, name='askadma_studio_save'),
     path('api/askadma/studio/runs/', askadma_studio.studio_runs_view, name='askadma_studio_runs'),

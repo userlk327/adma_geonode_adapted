@@ -2,13 +2,14 @@
 GIS utility functions for processing and publishing spatial data to GeoServer
 """
 import os
-import zipfile
 import tempfile
 import requests
 import json
 from pathlib import Path
 from django.conf import settings
 import logging
+
+from . import gis_read
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,10 @@ class GeoServerAPI:
         headers = {'Content-Type': 'application/xml'}
         
         response = requests.post(url, data=data, headers=headers, auth=self.auth)
-        return response.status_code == 201
+        if response.status_code == 201:
+            return True
+        # Workers publishing at the same time race to create it: one wins, the others find it there.
+        return requests.get(f"{url}/{self.workspace}", auth=self.auth).status_code == 200
     
     def create_datastore(self, datastore_name):
         """Create PostGIS datastore"""
@@ -136,13 +140,7 @@ class GeoServerAPI:
             upload_url = f"{self.base_url}/rest/workspaces/{self.workspace}/coveragestores/{store_name}/file.geotiff"
             
             with open(file_path, 'rb') as f:
-                headers = {
-                    'Content-Type': 'image/tiff',
-                    # Let GeoServer auto-configure the coverage
-                    'configure': 'first',  # Configure the coverage from the uploaded file
-                }
-                
-                # Upload with auto-configuration
+                # Upload with auto-configuration: GeoServer configures the coverage from the uploaded file
                 response = requests.put(
                     upload_url + "?configure=first", 
                     data=f, 
@@ -247,6 +245,23 @@ class GeoServerAPI:
             logger.error(f"Error uploading shapefile to GeoServer: {str(e)}")
             return False
     
+    def upload_geopackage(self, store_name, gpkg_path):
+        """Upload a GeoPackage to GeoServer as a new datastore; each table becomes a feature type"""
+        upload_url = f"{self.base_url}/rest/workspaces/{self.workspace}/datastores/{store_name}/file.gpkg"
+        try:
+            with open(gpkg_path, 'rb') as gpkg_data:
+                response = requests.put(
+                    upload_url, data=gpkg_data, headers={'Content-Type': 'application/x-sqlite3'}, auth=self.auth,
+                )
+        except Exception as e:
+            logger.error(f"Error uploading GeoPackage to GeoServer: {str(e)}")
+            return False
+        if response.status_code in [200, 201]:
+            logger.info(f"Successfully uploaded GeoPackage to GeoServer: {store_name}")
+            return True
+        logger.error(f"Failed to upload GeoPackage to GeoServer. Status: {response.status_code}, Response: {response.text}")
+        return False
+
     def get_layer_extent(self, layer_name):
         """Get the spatial extent of a layer from GeoServer"""
         try:
@@ -312,163 +327,140 @@ class GeoServerAPI:
             logger.error(f"Error getting layer extent from GeoServer: {str(e)}")
             return None
 
-def extract_zip_file(file_path, extract_to):
-    """Extract zip file and return list of extracted files"""
-    extracted_files = []
-    
-    with zipfile.ZipFile(file_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
-        extracted_files = zip_ref.namelist()
-    
-    return extracted_files
+def shapefile_parts(shp_file_obj):
+    """{extension: path} for the parts of shapefile `shp_file_obj`, its .shp included.
 
-def find_shapefile_components(extracted_files):
-    """Find main shapefile and its components"""
-    shp_files = [f for f in extracted_files if f.endswith('.shp')]
-    
-    if not shp_files:
-        return None
-    
-    # Take the first shapefile found
-    main_shp = shp_files[0]
-    base_name = main_shp[:-4]  # Remove .shp extension
-    
-    components = {
-        'shp': main_shp,
-        'shx': f"{base_name}.shx",
-        'dbf': f"{base_name}.dbf",
-        'prj': f"{base_name}.prj"  # Optional
-    }
-    
-    return components
+    A part is a file with the same name but for its extension, compared without
+    case. An ADAPT record's parts sit next to it in its folder on the share and
+    are found by path, under the share's rules; an upload's parts are the
+    owner's Files in the same Folder. Missing parts are simply absent.
+    """
+    from . import adapt_records, adapt_share
+    from .models import File
+
+    stem = Path(shp_file_obj.name).stem.casefold()
+    parts = {}
+    rel = adapt_records.path_of(shp_file_obj)
+    if rel is not None:
+        folder = adapt_share.parent(rel)
+        for entry in adapt_share.list_folder(folder):
+            ext = Path(entry.name).suffix.lower()
+            if not entry.is_dir and Path(entry.name).stem.casefold() == stem and ext in gis_read.SHAPEFILE_PARTS:
+                parts[ext] = adapt_share.resolve(adapt_share.join(folder, entry.name))
+        return parts
+    siblings = File.objects.filter(
+        owner=shp_file_obj.owner, folder=shp_file_obj.folder, name__istartswith=Path(shp_file_obj.name).stem,
+    ).order_by('created_at')
+    for sibling in siblings:
+        ext = Path(sibling.name).suffix.lower()
+        if Path(sibling.name).stem.casefold() == stem and ext in gis_read.SHAPEFILE_PARTS and sibling.file:
+            parts[ext] = sibling.local_path
+    parts['.shp'] = shp_file_obj.local_path
+    return parts
+
+
+def link_shapefile(parts, directory, stem):
+    """Gather shapefile `parts` in `directory` under one name, `stem`; return the path of the .shp.
+
+    The parts are linked, not copied, so a large shapefile costs nothing.
+    ShapefilePartsMissing names any required part that is not in `parts`.
+    """
+    missing = [ext for ext in gis_read.SHAPEFILE_REQUIRED if ext not in parts]
+    if missing:
+        raise gis_read.ShapefilePartsMissing(missing)
+    for ext, path in parts.items():
+        os.symlink(path, os.path.join(directory, f'{stem}{ext}'))
+    return os.path.join(directory, f'{stem}.shp')
+
+
+def read_spatial_info(file_obj):
+    """The gis_read.SpatialInfo of `file_obj`, read from its bytes (and, for a shapefile, its parts)."""
+    if gis_read.kind_of(file_obj.name) != 'shapefile':
+        return gis_read.read(file_obj.local_path, file_obj.name)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        return gis_read.read(link_shapefile(shapefile_parts(file_obj), temp_dir, 'layer'))
+
 
 def process_gis_file(file_obj):
-    """Process GIS file and extract spatial information"""
-    try:
-        file_path = file_obj.file.path
-        file_ext = Path(file_path).suffix.lower()
-        
-        # Handle different file types
-        if file_ext == '.zip':
-            return process_zip_file(file_obj, file_path)
-        elif file_ext in ['.geojson', '.gpkg', '.shp']:
-            return process_vector_file(file_obj, file_path)
-        elif file_ext in ['.tiff', '.tif', '.geotiff', '.geotif']:
-            return process_raster_file(file_obj, file_path)
-        elif file_ext == '.csv':
-            return process_csv_file(file_obj, file_path)
-        else:
-            raise ValueError(f"Unsupported file format: {file_ext}")
-            
-    except Exception as e:
-        logger.error(f"Error processing GIS file {file_obj.name}: {str(e)}")
-        return False, str(e)
+    """Read the coordinate system and extent of a GIS file and store them on it.
 
-def process_zip_file(file_obj, file_path):
-    """Process ZIP file (likely containing shapefile)"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        try:
-            # Extract zip file
-            extracted_files = extract_zip_file(file_path, temp_dir)
-            
-            # Find shapefile components
-            shp_components = find_shapefile_components(extracted_files)
-            
-            if not shp_components:
-                return False, "No shapefile found in ZIP archive"
-            
-            # Process the shapefile
-            shp_path = os.path.join(temp_dir, shp_components['shp'])
-            return process_vector_file(file_obj, shp_path)
-            
-        except Exception as e:
-            return False, f"Error processing ZIP file: {str(e)}"
+    On success the file is 'processed', with crs as 'EPSG:<code>' and
+    spatial_extent in longitude and latitude. On failure its crs and extent are
+    cleared, so nothing invented stays behind, and the message says why.
+    gis_read.ShapefilePartsMissing is raised, not returned, so the caller can
+    wait for parts still being uploaded.
 
-def process_vector_file(file_obj, file_path):
-    """Process vector file (GeoJSON, Shapefile, GeoPackage) - simplified version"""
+    A raw drone photo is read but is not a map: it ends 'drone_photo', with its
+    camera and the drone's GPS point in drone_photo, and success is False, as
+    there is nothing to publish. The caller must not mark it an error.
+
+    Returns (success, message).
+    """
     try:
-        # For now, just mark as processed with basic metadata
-        # In a full implementation, this would use GDAL/GeoPandas to read the file
-        
-        file_obj.crs = 'EPSG:4326'  # Default assumption
-        file_obj.spatial_extent = json.dumps({
-            "type": "envelope", 
-            "coordinates": [[-180, -90], [180, 90]]  # World extent as default
-        })
+        info = read_spatial_info(file_obj)
+    except gis_read.ShapefilePartsMissing:
+        raise
+    except gis_read.DronePhoto as photo:
+        record_drone_photo(file_obj, photo.photo)
+        return False, str(photo)
+    except gis_read.GisReadError as exc:
+        message = str(exc)
+    except Exception as exc:
+        logger.error(f"Error processing GIS file {file_obj.name}: {str(exc)}")
+        message = f"ADMA cannot read this file: {exc}"
+    else:
+        file_obj.crs = info.crs
+        file_obj.spatial_extent = info.envelope_json()
+        file_obj.drone_photo = None
         file_obj.gis_status = 'processed'
-        file_obj.processing_log = "Successfully processed vector file (basic processing)"
         file_obj.save()
-        
-        return True, "Processed vector file (basic processing)"
-        
-    except Exception as e:
-        return False, f"Error processing vector file: {str(e)}"
+        west, south, east, north = info.lonlat
+        return True, f"Coordinate system {info.crs}, extent {west:.5f}, {south:.5f}, {east:.5f}, {north:.5f} (longitude, latitude)"
+    file_obj.crs = None
+    file_obj.spatial_extent = None
+    file_obj.drone_photo = None
+    file_obj.save()
+    return False, message
 
-def process_raster_file(file_obj, file_path):
-    """Process raster file (GeoTIFF, TIFF)"""
-    try:
-        # Try to get basic info about the raster file
-        # For now, we'll use a simple approach without heavy dependencies
-        
-        # We'll assume the file has spatial info and set reasonable defaults
-        # In a full implementation, this would use GDAL to read actual CRS and extent
-        
-        # For Nebraska data, common CRS values:
-        # - EPSG:32614 (UTM Zone 14N) 
-        # - EPSG:4326 (WGS84)
-        # - EPSG:3857 (Web Mercator)
-        
-        # Set CRS based on filename or location hints
-        if any(hint in file_obj.name.lower() for hint in ['utm', '32614', 'zone14']):
-            file_obj.crs = 'EPSG:32614'  # UTM Zone 14N (common for Nebraska)
-        elif any(hint in file_obj.name.lower() for hint in ['4326', 'wgs84', 'latlon']):
-            file_obj.crs = 'EPSG:4326'  # WGS84
-        else:
-            # Default to UTM for Nebraska area since that's what your file uses
-            file_obj.crs = 'EPSG:32614'
-        
-        # Set a reasonable extent for Nebraska area
-        if file_obj.crs == 'EPSG:32614':
-            # UTM coordinates for Nebraska area (based on your file's bbox)
-            file_obj.spatial_extent = json.dumps({
-                "type": "envelope", 
-                "coordinates": [[712000, 4560000], [714000, 4562000]]  # Around your file's area
-            })
-        else:
-            # WGS84 coordinates for Nebraska
-            file_obj.spatial_extent = json.dumps({
-                "type": "envelope", 
-                "coordinates": [[-104.5, 39.5], [-95.5, 43.0]]  # Nebraska lat/lon extent
-            })
-        
-        file_obj.gis_status = 'processed'
-        file_obj.processing_log = f"Raster file processed - CRS: {file_obj.crs}"
-        file_obj.save()
-        
-        return True, f"Raster file processed with CRS {file_obj.crs}"
-        
-    except Exception as e:
-        return False, f"Error processing raster file: {str(e)}"
 
-def process_csv_file(file_obj, file_path):
-    """Process CSV file (assuming it has lat/lon columns) - simplified version"""
+def record_drone_photo(file_obj, photo):
+    """Store raw drone photo `photo` (a gis_read.DronePhotoInfo) on file_obj: 'drone_photo', no crs, no extent."""
+    file_obj.crs = None
+    file_obj.spatial_extent = None
+    file_obj.drone_photo = photo.as_json()
+    file_obj.gis_status = 'drone_photo'
+    file_obj.save()
+
+
+# What processing logged for a raster with no coordinate system, before it told raw drone photos apart.
+NO_CRS_FAILURE = f'✗ Processing failed: {gis_read.NO_CRS}'
+
+
+def recognize_drone_photo(file_obj):
+    """Read a raster in 'error' for having no coordinate system again, once; True if it is a raw drone photo.
+
+    Processing marked raw drone photos 'error' before it told them apart. The
+    file and map pages call this, so those photos show as drone photos without
+    anyone processing them again. A raster that is still just without a
+    coordinate system gets a line saying it was checked, and is not read again.
+    A file that cannot be read now is left as it was, to be checked next time.
+    """
+    log = (file_obj.processing_log or '').rstrip()
+    if (file_obj.gis_status != 'error' or not log.endswith(NO_CRS_FAILURE)
+            or gis_read.kind_of(file_obj.name) != 'raster'):
+        return False
     try:
-        # Basic CSV processing without heavy dependencies
-        # In a full implementation, this would use pandas/geopandas
-        
-        file_obj.crs = 'EPSG:4326'
-        file_obj.spatial_extent = json.dumps({
-            "type": "envelope", 
-            "coordinates": [[-180, -90], [180, 90]]  # World extent as default
-        })
-        file_obj.gis_status = 'processed'
-        file_obj.processing_log = "CSV processed (basic processing - assumed to contain geographic data)"
-        file_obj.save()
-        
-        return True, "Processed CSV with geographic data (basic processing)"
-        
-    except Exception as e:
-        return False, f"Error processing CSV file: {str(e)}"
+        gis_read.read_raster(file_obj.local_path)
+    except gis_read.DronePhoto as photo:
+        file_obj.processing_log = f'{log}\n✓ Checked again: {photo}'
+        record_drone_photo(file_obj, photo.photo)
+        return True
+    except gis_read.GisReadError as exc:
+        if str(exc) == gis_read.NO_CRS:
+            file_obj.processing_log = f'{log}\n✗ Checked again: {exc}'
+            file_obj.save(update_fields=['processing_log', 'updated_at'])
+    return False
+
 
 def publish_to_geoserver(file_obj):
     """Publish processed GIS file to GeoServer with systematic naming"""
@@ -498,7 +490,7 @@ def publish_to_geoserver_legacy(file_obj):
         if not geoserver_api.create_workspace():
             return False, "Failed to create/verify GeoServer workspace"
         
-        file_path = file_obj.file.path
+        file_path = file_obj.local_path
         file_ext = Path(file_path).suffix.lower()
         
         # Handle different file types
@@ -508,7 +500,7 @@ def publish_to_geoserver_legacy(file_obj):
             if success:
                 file_obj.geoserver_layer_name = layer_name
                 file_obj.gis_status = 'published'
-                file_obj.processing_log += f"\nRaster file published to GeoServer as coverage layer"
+                file_obj.processing_log += "\nRaster file published to GeoServer as coverage layer"
                 file_obj.save()
                 return True, f"Raster published successfully as {layer_name}"
             else:
@@ -572,14 +564,14 @@ def publish_to_geoserver_legacy(file_obj):
                     
                     file_obj.geoserver_layer_name = original_shp_name
                     file_obj.gis_status = 'published'
-                    file_obj.processing_log += f"\nShapefile published to GeoServer as vector layer"
+                    file_obj.processing_log += "\nShapefile published to GeoServer as vector layer"
                     
                     # Get the real spatial extent from GeoServer
                     try:
                         real_extent = geoserver_api.get_layer_extent(original_shp_name)
                         if real_extent:
                             file_obj.spatial_extent = json.dumps(real_extent)
-                            file_obj.processing_log += f"\nSpatial extent updated from GeoServer"
+                            file_obj.processing_log += "\nSpatial extent updated from GeoServer"
                     except Exception as e:
                         logger.warning(f"Could not get spatial extent from GeoServer: {str(e)}")
                     
@@ -587,7 +579,7 @@ def publish_to_geoserver_legacy(file_obj):
                     return True, f"Shapefile published successfully as {original_shp_name}"
                 else:
                     file_obj.gis_status = 'processed'
-                    file_obj.processing_log += f"\nShapefile processed but publishing to GeoServer failed"
+                    file_obj.processing_log += "\nShapefile processed but publishing to GeoServer failed"
                     file_obj.save()
                     return True, f"Shapefile processed as {layer_name} (GeoServer publishing failed)"
             else:
@@ -669,7 +661,7 @@ def bundle_and_publish_shapefile_legacy(shp_file_obj):
             # Copy all components to temp directory with CONSISTENT base name
             bundled_files = {}
             for ext, file_obj in component_files.items():
-                source_path = file_obj.file.path
+                source_path = file_obj.local_path
                 target_name = f"{base_name}{ext}"
                 target_path = os.path.join(temp_dir, target_name)
                 
@@ -747,14 +739,14 @@ def bundle_and_publish_shapefile_legacy(shp_file_obj):
                 # Update the main shapefile record with the actual layer name
                 shp_file_obj.geoserver_layer_name = original_shp_name
                 shp_file_obj.gis_status = 'published'
-                shp_file_obj.processing_log += f"\nShapefile bundled and published to GeoServer as vector layer"
+                shp_file_obj.processing_log += "\nShapefile bundled and published to GeoServer as vector layer"
                 
                 # Try to get spatial extent (original approach)
                 try:
                     real_extent = geoserver_api.get_layer_extent(original_shp_name)
                     if real_extent:
                         shp_file_obj.spatial_extent = json.dumps(real_extent)
-                        shp_file_obj.processing_log += f"\nSpatial extent updated from GeoServer"
+                        shp_file_obj.processing_log += "\nSpatial extent updated from GeoServer"
                 except Exception as e:
                     logger.warning(f"Could not get spatial extent from GeoServer: {str(e)}")
                 

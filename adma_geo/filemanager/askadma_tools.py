@@ -4,6 +4,10 @@ askadma_tools: extra and upgraded tools for the Ask ADMA agent.
 askadma.py merges TOOL_FUNCS and TOOL_DEFS from this file into its own; a tool here replaces
 the same-named tool there. Everything is read-only: tools read ADMA's database and ADAPT files
 and never write to ADAPT. The only files written are scan progress files in /tmp/adma_scans.
+
+Every tool works for the signed-in person and sees only what they may see (askadma_access):
+their own and public ADMA files, and the ADAPT folders their grants open. ADAPT is read live from
+the share and named "ADAPT/<path on the share>".
 """
 import io
 import json
@@ -13,11 +17,13 @@ import threading
 import time
 import uuid
 import warnings
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from django.db.models import Count, Q
 
+from . import askadma_access as AX
 from .models import Folder, File
 
 FILE_TYPES = ["image", "csv", "spreadsheet", "text", "gis", "document", "other"]
@@ -73,8 +79,12 @@ def _folders():
     """All folders (a few hundred) with full paths, cached for 5 minutes."""
     with _FOLDERS_LOCK:
         if not _FOLDERS["paths"] or time.time() - _FOLDERS["at"] > 300:
-            info = {fid: (name, parent) for fid, name, parent in
-                    Folder.objects.values_list("id", "name", "parent_id")}
+            rows = Folder.objects.values_list("id", "name", "parent_id", "owner_id", "is_public",
+                                              "is_third_party", "third_party_source")
+            info, meta = {}, {}
+            for fid, name, parent, owner_id, public, third, source in rows:
+                info[fid] = (name, parent)
+                meta[fid] = (owner_id, public, bool(third) and source == AX.SOURCE)
             paths, children = {}, {}
 
             def path_of(fid, depth=0):
@@ -89,10 +99,18 @@ def _folders():
             for fid, (_, parent) in info.items():
                 path_of(fid)
                 children.setdefault(parent, []).append(fid)
-            _FOLDERS.update(at=time.time(), paths=paths, children=children,
+            _FOLDERS.update(at=time.time(), paths=paths, children=children, meta=meta,
                             names={fid: v[0] for fid, v in info.items()},
                             parents={fid: v[1] for fid, v in info.items()})
         return _FOLDERS
+
+
+def _visible_paths():
+    """{folder id: path} for the ADMA folders (not ADAPT) the signed-in person may see."""
+    fc = _folders()
+    u = AX.user()
+    meta = fc.get("meta", {})
+    return {fid: p for fid, p in fc["paths"].items() if AX.folder_visible(meta.get(fid, (None, True, False)), u)}
 
 
 def _folder_path(folder_id):
@@ -102,11 +120,12 @@ def _folder_path(folder_id):
 
 
 def _resolve_folder(text):
-    """Find one folder by full path, path ending or name. Returns its id or raises _UserError."""
+    """Find one ADMA folder (not ADAPT) the person may see, by full path, path ending or name.
+    Returns its id or raises _UserError. For ADAPT and ADMA folders alike, use _resolve_place."""
     text = str(text or "").strip().strip("/")
     if not text:
         raise _UserError("No folder given.")
-    paths = _folders()["paths"]
+    paths = _visible_paths()
     low = text.lower()
     for test in (lambda p: p.lower() == low,
                  lambda p: p.lower().endswith("/" + low),
@@ -132,33 +151,161 @@ def _subtree(folder_id):
 
 
 def _live_files():
-    return File.objects.exclude(deletion_in_progress=True)
+    """ADMA's own files the person may read. ADAPT files are found on the share (see _find_file)."""
+    return AX.visible_files()
+
+
+# ------------------------------------------------------------ places --
+# A folder is either an ADMA folder (a row) or a folder on the ADAPT share (a path).
+
+Place = namedtuple("Place", "kind id rel")   # kind "db" (id) or "adapt" (rel: path on the share)
+
+
+def _adapt_folder_by_name(text):
+    """An ADAPT folder the person may see, named by its path on the share or (with the index) its name."""
+    if not AX.share_ready():
+        return None
+    t = str(text).strip().strip("/")
+    try:
+        if AX.can_see_folder(t) and AX._share().is_folder(t):
+            return AX.folder(t)
+    except Exception:
+        pass
+    last = t.rsplit("/", 1)[-1]
+    low = t.lower()
+    hits = [h for h in AX.index_search(last, kind="folder", limit=200)
+            if h["path"].lower() == low or h["path"].lower().endswith("/" + low)]
+    if len(hits) == 1:
+        return hits[0]["path"]
+    if len(hits) > 1:
+        options = sorted(AX.label(h["path"]) for h in hits)
+        raise _UserError(f"Several ADAPT folders match '{text}': " + "; ".join(options[:10]) +
+                         (" ..." if len(options) > 10 else "") + ". Use the full path, e.g. " + options[0] + ".")
+    return None
+
+
+def _resolve_place(text):
+    """An ADMA or ADAPT folder the person may see. 'ADAPT/<path>' names a folder on the share."""
+    text = str(text or "").strip()
+    if not text:
+        raise _UserError("No folder given.")
+    rel = AX.parse(text)
+    if rel is not None:
+        try:
+            return Place("adapt", None, AX.folder(rel))
+        except AX.AccessError as e:
+            raise _UserError(str(e))
+    try:
+        return Place("db", _resolve_folder(text), None)
+    except _UserError as db_error:
+        rel = _adapt_folder_by_name(text)
+        if rel is not None:
+            return Place("adapt", None, rel)
+        if AX.share_ready() and not AX.index_ready():
+            raise _UserError(str(db_error) + " For an ADAPT folder, give its path, e.g. ADAPT/<team>/<folder>.")
+        raise db_error
+
+
+def _place_label(place):
+    return AX.label(place.rel) if place.kind == "adapt" else _folder_path(place.id)
+
+
+def _place_name(place):
+    return (place.rel.rsplit("/", 1)[-1] or "ADAPT") if place.kind == "adapt" else _folders()["names"].get(place.id, "")
+
+
+def _place_url(place):
+    return AX.folder_url(place.rel) if place.kind == "adapt" else f"/folder/{place.id}/"
+
+
+def _adapt_parent(rel):
+    return rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+
+def _location(fi):
+    """The folder a file is in, as Ask ADMA names it: an ADMA folder path, or ADAPT/<path>."""
+    rel = AX.path_of(fi)
+    if rel is not None:
+        return AX.label(_adapt_parent(rel))
+    return _folder_path(fi.folder_id)
+
+
+def _adapt_record(rel):
+    try:
+        return AX.record(rel)
+    except AX.AccessError as e:
+        raise _UserError(str(e))
+
+
+def _adapt_files_named(name, under=None, limit=20):
+    """Paths of ADAPT files named `name` (any case) the person may see, from the index; under a folder if given."""
+    rows = AX.index_entries()
+    if rows is None:
+        return []
+    rows = rows.filter(is_dir=False, name__iexact=name)
+    if under:
+        key = "/".join(AX._share().key(under))
+        rows = rows.filter(key__startswith=key + "/")
+    return [r.path for r in rows.order_by("key")[:limit]]
 
 
 def _find_file(file_name, folder=""):
-    """One file by name, 'folder/path/name', or id; optionally inside a folder (and its subfolders).
-    Returns (file, note); note says when several files share the name. Raises _UserError."""
+    """One file by name, 'folder/path/name', 'ADAPT/<path>' or id; optionally inside a folder (and below).
+    Only files the person may see. Returns (file, note); note says when several files share the name."""
     name = str(file_name or "").strip()
     if not name:
         raise _UserError("No file name given.")
     if _UUID_RE.match(name):
-        fi = _live_files().filter(id=name).first()
-        if not fi:
+        fi = File.objects.exclude(deletion_in_progress=True).filter(id=name).first()
+        if not fi or not AX.can_read_row(fi):
             raise _UserError(f"No file with id {name}.")
         return fi, None
-    if "/" in name and not folder:
-        folder, name = name.rsplit("/", 1)
-    qs = _live_files().filter(name__iexact=name)
+    rel = AX.parse(name)
+    if rel is not None and not folder:
+        return _adapt_record(rel), None
+    place = None
     if folder:
-        qs = qs.filter(folder_id__in=_subtree(_resolve_folder(folder)))
-    matches = list(qs[:20])
-    if not matches:
-        raise _UserError(f"No file named '{name}' found" + (f" in '{folder}'." if folder else "."))
-    fi, note = matches[0], None
-    if len(matches) > 1:
-        more = "20+" if len(matches) == 20 else str(len(matches))
-        others = sorted({_folder_path(m.folder_id) for m in matches[1:]})
-        note = (f"{more} files are named '{name}'. Used the one in {_folder_path(fi.folder_id)}. "
+        place = _resolve_place(folder)
+    elif "/" in name:
+        head, tail = name.rsplit("/", 1)
+        try:
+            place, name = _resolve_place(head), tail
+        except _UserError:
+            place = None
+    if place is None or place.kind == "db":
+        qs = _live_files().filter(name__iexact=name)
+        if place is not None:
+            qs = qs.filter(folder_id__in=_subtree(place.id))
+        matches = list(qs[:20])
+        if matches:
+            fi, note = matches[0], None
+            if len(matches) > 1:
+                more = "20+" if len(matches) == 20 else str(len(matches))
+                others = sorted({_location(m) for m in matches[1:]})
+                note = (f"{more} files are named '{name}'. Used the one in {_location(fi)}. "
+                        f"Others are in: {'; '.join(others[:5])}. Pass folder to pick another.")
+            return fi, note
+        if place is not None:
+            raise _UserError(f"No file named '{name}' found in '{_place_label(place)}'.")
+    if place is not None:   # an ADAPT folder: the file itself, or a file of that name below it
+        direct = place.rel + "/" + name if place.rel else name
+        if AX.can_see_file(direct) and os.path.isfile(AX.disk_path(direct)):
+            return _adapt_record(direct), None
+        paths = _adapt_files_named(name, place.rel)
+        where = f" in '{_place_label(place)}'"
+    else:
+        paths = _adapt_files_named(name) if AX.share_ready() else []
+        where = ""
+    if not paths:
+        hint = ""
+        if AX.share_ready() and not AX.index_ready():
+            hint = " ADAPT search is not ready yet; give the ADAPT folder, e.g. folder='ADAPT/<team>/<folder>'."
+        raise _UserError(f"No file named '{name}' found{where}." + hint)
+    fi, note = _adapt_record(paths[0]), None
+    if len(paths) > 1:
+        more = "20+" if len(paths) == 20 else str(len(paths))
+        others = sorted({AX.label(_adapt_parent(p)) for p in paths[1:]})
+        note = (f"{more} files are named '{name}'. Used the one in {AX.label(_adapt_parent(paths[0]))}. "
                 f"Others are in: {'; '.join(others[:5])}. Pass folder to pick another.")
     return fi, note
 
@@ -182,6 +329,19 @@ def _thumb_url(file_id, width=320):
     return f"/api/askadma/thumb/{file_id}/?w={width}"
 
 
+def _adapt_thumb_url(rel, width=320):
+    """A preview of an ADAPT photo straight from the share: no record is made just to show it."""
+    return f"/api/askadma/thumb-adapt/?path={quote(rel)}&w={width}"
+
+
+def _adapt_open_url(rel):
+    """Opening an ADAPT file makes its record and shows its page, as in ADMA's own ADAPT pages."""
+    try:
+        return AX._share().file_url(rel)
+    except Exception:
+        return AX.folder_url(_adapt_parent(rel))
+
+
 def _go(label, url, icon="fa-arrow-right"):
     return {"label": label, "icon": icon, "action": {"type": "navigate", "url": url}}
 
@@ -195,12 +355,10 @@ def _short(name, n=28):
     return name if len(name) <= n else name[:n - 3] + "..."
 
 
-def _save_button(kind, source, folder_id):
-    """A button that saves this result into the user's ADMA Studio reports/ folder, if the data has a Studio."""
+def _save_button(kind, source, folder_id=None):
+    """A button that saves this result into the person's own ADMA Studio (Reports folder)."""
     try:
-        from . import askadma_studio
-        if folder_id is None or not askadma_studio.team_of(folder_id):
-            return None
+        from . import askadma_studio  # noqa: F401  (Studio installed)
     except Exception:
         return None
     return {"label": "Save to ADMA Studio", "icon": "fa-floppy-disk",
@@ -217,11 +375,17 @@ def _gallery(title, items):
     return {"type": "show_gallery", "title": title, "items": items}
 
 
-def _gallery_item(file_id, name, folder_id=None, caption="", boxes=None, size=None):
-    item = {"id": str(file_id), "name": name, "url": _file_url(file_id), "thumb": _thumb_url(file_id),
-            "image": _thumb_url(file_id, 1600), "caption": caption}
-    if folder_id is not None:
-        item["folder"] = _folder_path(folder_id)
+def _gallery_item(file_id, name, location=None, caption="", boxes=None, size=None):
+    """A photo for the chat gallery: an ADMA File (by id) or an ADAPT file (file_id 'adapt:<path>')."""
+    if str(file_id).startswith("adapt:"):
+        rel = str(file_id)[len("adapt:"):]
+        item = {"id": str(file_id), "name": name, "url": _adapt_open_url(rel), "thumb": _adapt_thumb_url(rel),
+                "image": _adapt_thumb_url(rel, 1600), "caption": caption}
+    else:
+        item = {"id": str(file_id), "name": name, "url": _file_url(file_id), "thumb": _thumb_url(file_id),
+                "image": _thumb_url(file_id, 1600), "caption": caption}
+    if location:
+        item["folder"] = location
     if boxes:
         item["boxes"] = boxes
         item["size"] = size
@@ -231,6 +395,9 @@ def _gallery_item(file_id, name, folder_id=None, caption="", boxes=None, size=No
 def _folder_page_action(fi):
     """Navigate to the folder page that lists this file, and highlight it there.
     The folder page shows subfolders (by name) then files (newest first), 100 per page."""
+    rel = AX.path_of(fi)
+    if rel is not None:   # ADAPT: the share's own folder page
+        return {"type": "navigate", "url": AX.folder_url(_adapt_parent(rel))}
     if not fi.folder_id:
         return None
     subfolders = Folder.objects.filter(parent_id=fi.folder_id, deletion_in_progress=False).count()
@@ -268,95 +435,227 @@ def _parse_when(text, end_of_day=False):
 
 # =================================================================== search --
 
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic")
+
+
+def _types_from(file_type):
+    types = []
+    for t in _as_list(file_type):
+        t = _TYPE_SYNONYMS.get(t.lower(), t.lower())
+        if t not in FILE_TYPES:
+            raise _UserError(f"Unknown file type '{t}'. Types are: {', '.join(FILE_TYPES)}.")
+        types.append(t)
+    return types
+
+
+def _size_bytes(mb):
+    return int(float(mb) * 1024 * 1024)
+
+
 def tool_search(query="", folder="", file_type="", extension="", added_after="", added_before="",
                 min_size_mb=None, max_size_mb=None, sort="name", limit=25):
     try:
-        qs = _live_files()
-        if query:
-            qs = qs.filter(name__icontains=str(query).strip())
-        if folder:
-            qs = qs.filter(folder_id__in=_subtree(_resolve_folder(folder)))
-        types = []
-        for t in _as_list(file_type):
-            t = _TYPE_SYNONYMS.get(t.lower(), t.lower())
-            if t not in FILE_TYPES:
-                raise _UserError(f"Unknown file type '{t}'. Types are: {', '.join(FILE_TYPES)}.")
-            types.append(t)
-        if types:
-            qs = qs.filter(file_type__in=types)
+        place = _resolve_place(folder) if folder else None
+        types = _types_from(file_type)
         exts = ["." + e.lower().lstrip(".*") for e in _as_list(extension)]
-        if exts:
-            cond = Q()
-            for e in exts:
-                cond |= Q(name__iendswith=e)
-            qs = qs.filter(cond)
-        if added_after:
-            qs = qs.filter(created_at__gte=_parse_when(added_after))
-        if added_before:
-            qs = qs.filter(created_at__lt=_parse_when(added_before, end_of_day=True))
-        if min_size_mb not in (None, ""):
-            qs = qs.filter(file_size__gte=int(float(min_size_mb) * 1024 * 1024))
-        if max_size_mb not in (None, ""):
-            qs = qs.filter(file_size__lte=int(float(max_size_mb) * 1024 * 1024))
+        after = _parse_when(added_after) if added_after else None
+        before = _parse_when(added_before, end_of_day=True) if added_before else None
+        min_b = _size_bytes(min_size_mb) if min_size_mb not in (None, "") else None
+        max_b = _size_bytes(max_size_mb) if max_size_mb not in (None, "") else None
+        q = str(query or "").strip()
+
+        # ADMA's own files
+        db_objs, db_total = [], 0
+        if place is None or place.kind == "db":
+            qs = _live_files()
+            if q:
+                qs = qs.filter(name__icontains=q)
+            if place is not None:
+                qs = qs.filter(folder_id__in=_subtree(place.id))
+            if types:
+                qs = qs.filter(file_type__in=types)
+            if exts:
+                cond = Q()
+                for e in exts:
+                    cond |= Q(name__iendswith=e)
+                qs = qs.filter(cond)
+            if after:
+                qs = qs.filter(created_at__gte=after)
+            if before:
+                qs = qs.filter(created_at__lt=before)
+            if min_b is not None:
+                qs = qs.filter(file_size__gte=min_b)
+            if max_b is not None:
+                qs = qs.filter(file_size__lte=max_b)
+            db_qs = qs
+
+        # ADAPT files, from the index
+        adapt_rows, adapt_total, adapt_note = None, 0, None
+        if (place is None or place.kind == "adapt") and AX.share_ready():
+            rows = AX.index_entries()
+            if rows is None:
+                adapt_note = ("ADAPT files are not searchable yet (the nightly ADAPT index has not run). "
+                              "list_folder_contents still reads ADAPT folders.")
+            else:
+                rows = rows.filter(is_dir=False)
+                if q:
+                    rows = rows.filter(name__icontains=q)
+                if place is not None and place.rel:
+                    rows = rows.filter(key__startswith="/".join(AX._share().key(place.rel)) + "/")
+                if types:
+                    rows = rows.filter(file_type__in=types)
+                if exts:
+                    cond = Q()
+                    for e in exts:
+                        cond |= Q(name__iendswith=e)
+                    rows = rows.filter(cond)
+                if after:
+                    rows = rows.filter(mtime__gte=after)
+                if before:
+                    rows = rows.filter(mtime__lt=before)
+                if min_b is not None:
+                    rows = rows.filter(size__gte=min_b)
+                if max_b is not None:
+                    rows = rows.filter(size__lte=max_b)
+                adapt_rows = rows
     except _UserError as e:
         return _err(str(e))
     except (TypeError, ValueError) as e:
         return _err(f"Bad search value: {e}")
 
-    order = {"name": "name", "newest": "-created_at", "oldest": "created_at",
-             "largest": "-file_size", "smallest": "file_size"}.get(str(sort or "name").lower(), "name")
+    sort = str(sort or "name").lower()
+    db_order = {"name": "name", "newest": "-created_at", "oldest": "created_at",
+                "largest": "-file_size", "smallest": "file_size"}.get(sort, "name")
+    ad_order = {"name": "name", "newest": "-mtime", "oldest": "mtime",
+                "largest": "-size", "smallest": "size"}.get(sort, "name")
     try:
         limit = max(1, min(int(limit), 100))
     except (TypeError, ValueError):
         limit = 25
-    total = qs.count()
-    objs = list(qs.order_by(order)[:limit])
-    files = [{"id": str(f.id), "name": f.name, "type": f.file_type, "size": _human_size(f.file_size),
-              "folder": _folder_path(f.folder_id), "added": _date_str(f.created_at)}
-             for f in objs]
+    found = []   # (sort key, row dict, gallery id or None)
+    if place is None or place.kind == "db":
+        db_total = db_qs.count()
+        for f in db_qs.order_by(db_order)[:limit]:
+            found.append({"id": str(f.id), "name": f.name, "type": f.file_type, "bytes": f.file_size or 0,
+                          "size": _human_size(f.file_size), "folder": _location(f), "added": _date_str(f.created_at),
+                          "_when": f.created_at, "_url": _file_url(f.id), "_gallery": str(f.id)})
+    if adapt_rows is not None:
+        adapt_total = adapt_rows.count()
+        for r in adapt_rows.order_by(ad_order, "key")[:limit]:
+            found.append({"path": AX.label(r.path), "name": r.name, "type": r.file_type, "bytes": r.size or 0,
+                          "size": _human_size(r.size), "folder": AX.label(_adapt_parent(r.path)),
+                          "modified": _date_str(r.mtime), "_when": r.mtime, "_url": _adapt_open_url(r.path),
+                          "_gallery": "adapt:" + r.path})
+    far = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    keyf = {"newest": lambda x: x["_when"] or far, "oldest": lambda x: x["_when"] or far,
+            "largest": lambda x: x["bytes"], "smallest": lambda x: x["bytes"]}.get(sort, lambda x: x["name"].lower())
+    found.sort(key=keyf, reverse=sort in ("newest", "largest"))
+    found = found[:limit]
+    total = db_total + adapt_total
+    files = [{k: v for k, v in f.items() if not k.startswith("_") and k != "bytes"} for f in found]
     out = {"total_matches": total, "showing": len(files), "files": files}
-    buttons = [_go(f"Open {_short(f.name)}", _file_url(f.id), "fa-file") for f in objs[:3]]
-    images = [f for f in objs if f.file_type == "image"]
+    buttons = [_go(f"Open {_short(f['name'])}", f["_url"], "fa-file") for f in found[:3]]
+    images = [f for f in found if f["type"] == "image"]
     if len(images) > 1:
         buttons.insert(0, {"label": f"Show {len(images)} photos", "icon": "fa-images",
                            "action": _gallery(f"Search results ({len(images)} photos)",
-                                              [_gallery_item(f.id, f.name, f.folder_id, _folder_path(f.folder_id))
+                                              [_gallery_item(f["_gallery"], f["name"], f["folder"], f["folder"])
                                                for f in images[:48]])})
-    if query:
-        low = str(query).strip().lower()
+    if q:
+        low = q.lower()
         fc = _folders()
-        matched = sorted((p, fid) for fid, p in fc["paths"].items() if low in fc["names"][fid].lower())
-        if matched:
-            out["matching_folders"] = [p for p, _ in matched[:20]]
-            buttons += [_go(f"Open folder {_short(fc['names'][fid], 22)}", f"/folder/{fid}/", "fa-folder")
-                        for _, fid in matched[:2]]
+        folders = []
+        if place is None or place.kind == "db":
+            folders += sorted((p, f"/folder/{fid}/", fc["names"][fid]) for fid, p in _visible_paths().items()
+                              if low in fc["names"][fid].lower())
+        if adapt_rows is not None:
+            under = place.rel if place is not None else ""
+            folders += [(AX.label(h["path"]), h["url"], h["name"]) for h in AX.index_search(q, kind="folder", limit=40)
+                        if not under or h["path"].lower().startswith(under.lower() + "/")]
+        if folders:
+            out["matching_folders"] = [p for p, _, _ in folders[:20]]
+            buttons += [_go(f"Open folder {_short(n, 22)}", url, "fa-folder") for _, url, n in folders[:2]]
     out["suggested_actions"] = buttons
     if total > len(files):
         out["more"] = f"{total - len(files)} more files match. Narrow the search or raise limit (max 100)."
     if added_after or added_before or sort in ("newest", "oldest"):
-        out["date_note"] = ("Dates are when files were added to ADMA. ADAPT files show the date they were "
-                            "synced, not when they were taken; use image_metadata for a photo's real date.")
+        out["date_note"] = ("For ADMA files, dates are when they were added to ADMA; for ADAPT files, when they were "
+                            "last changed on the share. Use image_metadata for when a photo was taken.")
+    if adapt_note:
+        out["adapt_note"] = adapt_note
     if total == 0 and "matching_folders" not in out:
         out["message"] = "Nothing matched."
-    return json.dumps(out)
+    return json.dumps(out, default=str)
 
 
 # ========================================================= folders & opening --
 
+def _adapt_stat(rel):
+    try:
+        return os.stat(AX.disk_path(rel))
+    except Exception:
+        return None
+
+
+def _list_adapt(place, limit):
+    rel = place.rel
+    try:
+        items = AX.entries(rel)
+    except AX.AccessError as e:
+        return _err(str(e))
+    dirs = [e for e in items if e.is_dir]
+    files_all = [e for e in items if not e.is_dir]
+    sums = AX.summaries([d.rel for d in dirs[:200]])
+    subfolders = [{"name": d.name, "contents": sums.get(d.rel) or None} for d in dirs[:200]]
+    by_type = {}
+    for e in files_all:
+        t = File.file_type_for(e.name) or "other"
+        by_type[t] = by_type.get(t, 0) + 1
+    files = []
+    for e in files_all[:limit]:
+        st = _adapt_stat(e.rel)
+        files.append({"name": e.name, "type": File.file_type_for(e.name) or "other",
+                      "size": _human_size(st.st_size) if st else None})
+    out = {"folder": AX.label(rel), "subfolders": subfolders, "file_count": len(files_all),
+           "file_types": by_type, "files": files}
+    if len(dirs) > 200:
+        out["subfolders_note"] = f"Showing 200 of {len(dirs)} subfolders."
+    if AX._perm().visible_children(AX.user(), rel) is not None:
+        out["access_note"] = ("You can open this folder only to reach the folders you have access to below it, "
+                              "so its files are not shown.")
+    if len(files_all) > len(files):
+        out["note"] = (f"Showing the first {len(files)} of {len(files_all)} files by name. "
+                       "Use search with this folder to filter by name, type, size or date.")
+    buttons = [_go("Open this folder", AX.folder_url(rel), "fa-folder-open")]
+    images = [e for e in files_all if e.name.lower().endswith(IMAGE_EXTS)]
+    if images:
+        n = len(images)
+        buttons.append({"label": f"Show photos ({min(n, 48)} of {n})" if n > 48 else f"Show {n} photo{'s' if n > 1 else ''}",
+                        "icon": "fa-images",
+                        "action": _gallery(f"{_place_name(place)}: photos",
+                                           [_gallery_item("adapt:" + e.rel, e.name) for e in images[:48]])})
+        buttons.append(_ask("Scan for people", f"Scan the folder {AX.label(rel)} for people", "fa-person"))
+    buttons += [_go(f"Open {_short(d.name, 22)}", AX.folder_url(d.rel), "fa-folder") for d in dirs[:2]]
+    out["suggested_actions"] = buttons[:5]
+    return json.dumps(out)
+
+
 def tool_list_folder_contents(folder, limit=50):
     try:
-        fid = _resolve_folder(folder)
+        place = _resolve_place(folder)
     except _UserError as e:
         return _err(str(e))
     try:
         limit = max(1, min(int(limit), 200))
     except (TypeError, ValueError):
         limit = 50
+    if place.kind == "adapt":
+        return _list_adapt(place, limit)
+    fid = place.id
     fc = _folders()
-    sub_ids = sorted(fc["children"].get(fid, []), key=lambda f: fc["names"][f].lower())
-    sub_counts = dict(Folder.objects.filter(id__in=sub_ids).values_list("id", "cached_total_file_count"))
-    for s in Folder.objects.filter(id__in=sub_ids).exclude(third_party_source="adapt").values_list("id", flat=True):
-        sub_counts[s] = _live_files().filter(folder_id__in=_subtree(s)).count()
+    visible = _visible_paths()
+    sub_ids = sorted((c for c in fc["children"].get(fid, []) if c in visible), key=lambda f: fc["names"][f].lower())
+    sub_counts = {s: _live_files().filter(folder_id__in=_subtree(s)).count() for s in sub_ids}
     subfolders = [{"name": fc["names"][s], "files": sub_counts.get(s)} for s in sub_ids]
     qs = _live_files().filter(folder_id=fid)
     by_type = {r["file_type"]: r["n"] for r in qs.values("file_type").annotate(n=Count("id"))}
@@ -383,12 +682,11 @@ def tool_list_folder_contents(folder, limit=50):
 
 def tool_open_folder(folder):
     try:
-        fid = _resolve_folder(folder)
+        place = _resolve_place(folder)
     except _UserError as e:
         return _err(str(e))
-    path = _folder_path(fid)
-    return json.dumps({"ui_action": {"type": "navigate", "url": f"/folder/{fid}/"},
-                       "message": f"Opening the {path} folder."})
+    return json.dumps({"ui_action": {"type": "navigate", "url": _place_url(place)},
+                       "message": f"Opening the {_place_label(place)} folder."})
 
 
 def tool_open_file(file_name, folder=""):
@@ -397,7 +695,7 @@ def tool_open_file(file_name, folder=""):
     except _UserError as e:
         return _err(str(e))
     out = {"ui_action": {"type": "navigate", "url": f"/file/{fi.id}/"},
-           "message": f"Opening {fi.name} in {_folder_path(fi.folder_id)}."}
+           "message": f"Opening {fi.name} in {_location(fi)}."}
     in_folder = _folder_page_action(fi)
     if in_folder:
         out["suggested_actions"] = [{"label": "Show it in its folder", "icon": "fa-folder-open", "action": in_folder}]
@@ -441,7 +739,7 @@ def tool_show_in_folder(file_name, folder=""):
     action = _folder_page_action(fi)
     if not action:
         return _err(f"{fi.name} is not inside a folder.")
-    return json.dumps(_with_note({"ui_action": action, "message": f"Opening {_folder_path(fi.folder_id)} "
+    return json.dumps(_with_note({"ui_action": action, "message": f"Opening {_location(fi)} "
                                   f"and highlighting {fi.name}."}, note))
 
 
@@ -465,23 +763,40 @@ def tool_show_photos(scan_id="", object="", folder="", query="", taken_after="",
         return json.dumps({"ui_action": _gallery(title, items),
                            "message": f"Showing {len(items)} of {len(hits)} matching photos in the chat panel. "
                                       "Clicking one opens it with its detection boxes."})
-    qs = _live_files().filter(file_type="image")
-    try:
-        if folder:
-            qs = qs.filter(folder_id__in=_subtree(_resolve_folder(folder)))
-    except _UserError as e:
-        return _err(str(e))
-    if query:
-        qs = qs.filter(name__icontains=str(query).strip())
     if not folder and not query:
         return _err("Give a folder, a name to search for, or a scan to show photos from.")
-    total = qs.count()
-    files = list(qs.order_by("third_party_id", "name")[:limit])
-    if not files:
+    try:
+        place = _resolve_place(folder) if folder else None
+    except _UserError as e:
+        return _err(str(e))
+    q = str(query or "").strip().lower()
+    items, total, more_known = [], 0, True
+    if place is None or place.kind == "db":
+        qs = _live_files().filter(file_type="image")
+        if place is not None:
+            qs = qs.filter(folder_id__in=_subtree(place.id))
+        if q:
+            qs = qs.filter(name__icontains=q)
+        total += qs.count()
+        items += [_gallery_item(f.id, f.name, _location(f)) for f in qs.order_by("name")[:limit]]
+    if (place is None or place.kind == "adapt") and AX.share_ready() and len(items) < limit:
+        if place is not None:
+            paths, more_known = AX.walk_files(place.rel, IMAGE_EXTS, limit=5000)
+            if q:
+                paths = [p for p in paths if q in p.rsplit("/", 1)[-1].lower()]
+        else:
+            rows = AX.index_entries()
+            paths = [] if rows is None else [r.path for r in rows.filter(is_dir=False, file_type="image",
+                                                                         name__icontains=q).order_by("key")[:5000]]
+        total += len(paths)
+        items += [_gallery_item("adapt:" + p, p.rsplit("/", 1)[-1], AX.label(_adapt_parent(p)))
+                  for p in paths[:limit - len(items)]]
+    if not items:
         return json.dumps({"message": "No photos match."})
-    title = (folder.split("/")[-1] if folder else f"'{query}'") + f" ({total} photo{'s' if total != 1 else ''})"
-    return json.dumps({"ui_action": _gallery(title, [_gallery_item(f.id, f.name, f.folder_id) for f in files]),
-                       "message": f"Showing {len(files)} of {total} photos in the chat panel."})
+    name = _place_name(place) if place is not None else f"'{query}'"
+    count = f"{total}{'+' if not more_known else ''}"
+    return json.dumps({"ui_action": _gallery(f"{name} ({count} photo{'s' if total != 1 else ''})", items),
+                       "message": f"Showing {len(items)} of {count} photos in the chat panel."})
 
 
 def tool_read_image(file_name, question="Describe this image in detail.", folder=""):
@@ -515,11 +830,11 @@ def tool_read_image(file_name, question="Describe this image in detail.", folder
         desc = resp.choices[0].message.content
         if not desc or not desc.strip():
             return _err("The vision model returned an empty description.", image=fi.name)
-        out = {"image": fi.name, "location": _folder_path(fi.folder_id), "description": desc,
+        out = {"image": fi.name, "location": _location(fi), "description": desc,
                "suggested_actions": [
                    {"label": "View photo", "icon": "fa-expand", "action": _viewer(fi)},
                    _ask("Count people & animals", f"Detect people and animals in {fi.name} "
-                                                  f"(folder {_folder_path(fi.folder_id)})", "fa-crosshairs"),
+                                                  f"(folder {_location(fi)})", "fa-crosshairs"),
                    _go("Open file page", _file_url(fi.id), "fa-file")]}
         return json.dumps(_with_note(out, note))
     except Exception as e:
@@ -636,10 +951,10 @@ def tool_image_metadata(file_name, folder=""):
         return _err(str(e))
     if fi.file_type != "image":
         return _err("That file is not an image.")
-    out = {"image": fi.name, "location": _folder_path(fi.folder_id), "file_size": _human_size(fi.file_size),
+    out = {"image": fi.name, "location": _location(fi), "file_size": _human_size(fi.file_size),
            "mime_type": fi.mime_type, "added_to_adma": _date_str(fi.created_at)}
-    if fi.is_third_party and fi.third_party_id:
-        out["adapt_path"] = fi.third_party_id
+    if AX.path_of(fi):
+        out["adapt_path"] = AX.label(AX.path_of(fi))
     try:
         disk_path = fi.third_party_url if fi.is_third_party and fi.third_party_url else fi.file.path
         out["file_modified"] = datetime.fromtimestamp(os.stat(disk_path).st_mtime, tz=timezone.utc) \
@@ -856,7 +1171,7 @@ def tool_detect_objects(file_name, objects=None, min_confidence=0.25, folder="")
                            "where": _where(box, width, height), "box": [round(v) for v in box]})
     detections.sort(key=lambda d: -d["confidence"])
     pct = round(min_confidence * 100)
-    out = {"image": fi.name, "location": _folder_path(fi.folder_id), "image_size": [width, height],
+    out = {"image": fi.name, "location": _location(fi), "image_size": [width, height],
            "model": os.path.splitext(os.path.basename(YOLO_MODEL))[0], "min_confidence": min_confidence,
            "counts": counts, "detections": detections[:50], "seconds": seconds,
            "note": f"Counts include only objects the detector is at least {pct}% sure of. " + _DETECTION_NOTE}
@@ -936,6 +1251,20 @@ def _scan_running(state):
     return time.time() - float(state.get("updated", 0)) < 180
 
 
+class _AdaptImage:
+    """An ADAPT photo to scan, read by its path on the share (no record is made for it)."""
+    def __init__(self, rel):
+        self.rel, self.name = rel, rel.rsplit("/", 1)[-1]
+        self.id = "adapt:" + rel
+
+    def open_content(self, mode="rb"):
+        return open(AX.disk_path(self.rel), mode)
+
+
+def _scan_location(fi):
+    return AX.label(_adapt_parent(fi.rel)) if isinstance(fi, _AdaptImage) else _location(fi)
+
+
 def _run_scan(scan_id, files, class_ids, min_confidence, stop):
     from PIL import Image
     state = _load_scan(scan_id)
@@ -959,7 +1288,7 @@ def _run_scan(scan_id, files, class_ids, min_confidence, stop):
                     counts[name] = counts.get(name, 0) + 1
                     best[name] = max(best.get(name, 0), round(conf, 2))
                 if counts:
-                    state["hits"].append({"file": fi.name, "id": str(fi.id), "folder": _folder_path(fi.folder_id),
+                    state["hits"].append({"file": fi.name, "id": str(fi.id), "folder": _scan_location(fi),
                                           "taken": taken, "counts": counts, "best_confidence": best,
                                           "size": [w, h],
                                           "boxes": [[n, round(c, 2), [round(v) for v in b]] for n, c, b in kept[:30]]})
@@ -992,7 +1321,7 @@ def _run_scan(scan_id, files, class_ids, min_confidence, stop):
 def tool_scan_folder(folder, objects=None, min_confidence=0.25, include_subfolders=True,
                      max_images=300, start_at=0):
     try:
-        fid = _resolve_folder(folder)
+        place = _resolve_place(folder)
     except _UserError as e:
         return _err(str(e))
     objects = _as_list(objects)
@@ -1021,17 +1350,28 @@ def tool_scan_folder(folder, objects=None, min_confidence=0.25, include_subfolde
             return _err("Another scan is still running. Check it with scan_status, or stop it first.",
                         running_scan=latest["scan_id"], folder=latest["folder"],
                         progress=f"{latest['scanned']}/{latest['to_scan']}")
-        folder_ids = _subtree(fid) if include_subfolders else [fid]
-        qs = _live_files().filter(folder_id__in=folder_ids, file_type="image")
-        total = qs.count()
+        if place.kind == "adapt":
+            if include_subfolders:
+                paths, _complete = AX.walk_files(place.rel, IMAGE_EXTS)
+            else:
+                paths = [e.rel for e in AX.entries(place.rel) if not e.is_dir and e.name.lower().endswith(IMAGE_EXTS)]
+            total = len(paths)
+            files = [_AdaptImage(p) for p in paths[start_at:start_at + max_images]]
+        else:
+            folder_ids = _subtree(place.id) if include_subfolders else [place.id]
+            qs = _live_files().filter(folder_id__in=folder_ids, file_type="image")
+            total = qs.count()
+            files = None
         if total == 0:
-            return _err(f"No images in {_folder_path(fid)}" + (" or its subfolders." if include_subfolders else "."))
+            return _err(f"No images in {_place_label(place)}" + (" or its subfolders." if include_subfolders else "."))
         if start_at >= total:
             return _err(f"start_at {start_at} is past the end; the folder has {total} images.")
-        files = list(qs.order_by("third_party_id", "name")[start_at:start_at + max_images])
+        if files is None:
+            files = list(qs.order_by("name")[start_at:start_at + max_images])
         scan_id = uuid.uuid4().hex[:8]
         now = time.time()
-        state = {"scan_id": scan_id, "status": "running", "folder": _folder_path(fid),
+        state = {"scan_id": scan_id, "status": "running", "folder": _place_label(place),
+                 "folder_url": _place_url(place),
                  "include_subfolders": bool(include_subfolders),
                  "objects": [names[i] for i in class_ids] or ["everything"],
                  "min_confidence": min_confidence, "images_in_folder": total, "start_at": start_at,
@@ -1068,7 +1408,7 @@ def tool_scan_folder(folder, objects=None, min_confidence=0.25, include_subfolde
                               f"start another with start_at={start_at + len(files)} afterwards.")
     out["suggested_actions"] = [_ask("Check progress", "Is the scan done?", "fa-rotate"),
                                 _ask("Stop scan", "Stop the scan", "fa-stop"),
-                                _go("Open the folder", f"/folder/{fid}/", "fa-folder-open")]
+                                _go("Open the folder", _place_url(place), "fa-folder-open")]
     return json.dumps(out)
 
 
@@ -1162,16 +1502,12 @@ def tool_scan_status(scan_id="", object="", taken_after="", taken_before="", lim
                                            [_hit_item(h) for h in sel[:48]])})
     first = (matching or _filter_hits(state, "", "", ""))[:1]
     if first:
-        buttons.append(_go("Open first match", _file_url(first[0]["id"]), "fa-file"))
+        buttons.append(_go("Open first match", _hit_item(first[0])["url"], "fa-file"))
     buttons = buttons[:5]
     if hits and not running:
-        try:
-            scan_folder_id = _resolve_folder(state["folder"])
-        except _UserError:
-            scan_folder_id = None
         _with_save(buttons, _save_button("scan", {"scan_id": state["scan_id"], "object": object,
-                                                  "taken_after": taken_after, "taken_before": taken_before},
-                                         scan_folder_id), at=len(buttons))
+                                                  "taken_after": taken_after, "taken_before": taken_before}),
+                   at=len(buttons))
     out["suggested_actions"] = buttons
     return json.dumps(out, default=str)
 
@@ -1197,9 +1533,7 @@ def _hit_item(hit):
     """A gallery item for a scan hit, with its detection boxes."""
     counts = ", ".join(f"{n} {k}" for k, n in hit["counts"].items())
     when = (hit.get("taken") or "").replace("T", " ")[:16]
-    item = {"id": hit["id"], "name": hit["file"], "url": _file_url(hit["id"]), "thumb": _thumb_url(hit["id"]),
-            "image": _thumb_url(hit["id"], 1600), "folder": hit["folder"],
-            "caption": counts + (f"\n{when}" if when else "")}
+    item = _gallery_item(hit["id"], hit["file"], hit["folder"], counts + (f"\n{when}" if when else ""))
     if hit.get("boxes"):
         item["boxes"] = [{"label": n, "confidence": c, "box": b} for n, c, b in hit["boxes"]]
         item["size"] = hit.get("size")
@@ -1654,7 +1988,7 @@ def tool_analyze_data(file_name, operation="summary", folder="", columns=None, g
         return _err(str(e))
     except Exception as e:
         return _err(f"Analysis failed: {e}")
-    out = {"file": fi.name, "location": _folder_path(fi.folder_id), "operation": op, "rows_used": len(df)}
+    out = {"file": fi.name, "location": _location(fi), "operation": op, "rows_used": len(df)}
     if applied:
         out["filters"] = applied
     if meta.get("sheets") and len(meta["sheets"]) > 1:
@@ -1790,7 +2124,7 @@ def tool_plot_data(file_name, x_column, y_columns=None, chart_type="bar", agg=""
               "values": datasets[0]["data"] if kind != "scatter" else [], "x_label": x, "y_label": y_label,
               "title": title}
     out = {"ui_action": action, "message": f"Here is the {kind} chart: {title}.", "summary": summary,
-           "file": fi.name, "location": _folder_path(fi.folder_id)}
+           "file": fi.name, "location": _location(fi)}
     if applied:
         out["filters"] = applied
     if notes:
@@ -1857,8 +2191,9 @@ TOOL_FUNCS = {
 }
 
 _S = {"type": "string"}
-_FOLDER = {"type": "string", "description": "Optional: folder name or path, e.g. 'test_images' or "
-                                            "'ADAPT/Test101/test_images'. Use it when several files share a name."}
+_FOLDER = {"type": "string", "description": "Optional: folder name or path, e.g. 'test_images', or an ADAPT "
+                                            "folder by its path on the share, 'ADAPT/<team>/<folder>'. Use it when "
+                                            "several files share a name."}
 _LIST = {"type": "array", "items": {"type": "string"}}
 _FILTERS = {"type": "array", "items": {"type": "string"},
             "description": "Optional row filters, e.g. [\"Price > 100\", \"Site = North\", \"Notes contains cow\"]."}
@@ -1867,8 +2202,9 @@ TOOL_DEFS = [
     ("search", "Search files and folders in ADMA by name text, folder (name or path; includes subfolders), "
                "file type, extension, size and date added. Returns the total number of matches and up to `limit` "
                "files with id, type, size, folder and date added. File types: image, csv, spreadsheet, text, gis, "
-               "document, other. Dates are when files were added to ADMA (ADAPT files: when they were synced), not "
-               "when photos were taken; use image_metadata for that.",
+               "document, other. ADAPT files are found through the nightly ADAPT index and named ADAPT/<path>. "
+               "Dates are when ADMA files were added, or when ADAPT files last changed on the share, not when "
+               "photos were taken; use image_metadata for that.",
      {"query": {"type": "string", "description": "Text in the file name. Optional."},
       "folder": _FOLDER, "file_type": _S, "extension": {"type": "string", "description": "e.g. 'jpg' or 'tif'"},
       "added_after": {"type": "string", "description": "YYYY-MM-DD, 'today', or '7 days ago'"},

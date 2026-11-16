@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load file_display %}
 
 {% block title %}ADMA - Agricultural Data Management & Analytics{% endblock %}
 
@@ -131,10 +132,7 @@
             </p>
             {% if not user.is_authenticated %}
             <div class="d-flex justify-content-center gap-3">
-                <a href="{% url 'filemanager:register' %}" class="btn btn-light btn-lg">
-                    <i class="fas fa-user-plus me-2"></i>Get Started
-                </a>
-                <a href="{% url 'login' %}" class="btn btn-outline-light btn-lg">
+                <a href="{% url 'login' %}" class="btn btn-light btn-lg">
                     <i class="fas fa-sign-in-alt me-2"></i>Sign In
                 </a>
             </div>
@@ -173,7 +171,7 @@
                     <h4 class="mb-0 me-3">
                         <i class="fas fa-map me-2"></i>Public Maps
                     </h4>
-                    <span class="badge bg-secondary">{{ stats.total_public_maps }} maps</span>
+                    <span class="badge bg-secondary">{{ stats.total_public_maps }} map{{ stats.total_public_maps|pluralize }}</span>
                 </div>
             </div>
             
@@ -202,7 +200,7 @@
                                         </div>
                                     </div>
                                 </td>
-                                <td><span class="badge bg-info">{{ map.map_layers.count }} layers</span></td>
+                                <td><span class="badge bg-info">{% with n=map.map_layers.count %}{{ n }} layer{{ n|pluralize }}{% endwith %}</span></td>
                                 <td><small>{{ map.owner.username }}</small></td>
                                 <td><small>{{ map.created_at|date:"M d, Y" }}</small></td>
                             </tr>
@@ -226,7 +224,7 @@
                     <h4 class="mb-0 me-3">
                         <i class="fas fa-cloud-download-alt me-2"></i>Third-Party Data
                     </h4>
-                    <span class="badge bg-secondary">{{ stats.total_third_party_folders }} folders, {{ stats.total_third_party_files }} files</span>
+                    <span class="badge bg-secondary">{{ stats.total_third_party_folders }} folder{{ stats.total_third_party_folders|pluralize }}, {{ stats.total_third_party_files }} file{{ stats.total_third_party_files|pluralize }}</span>
                 </div>
                 
                 <!-- View Toggle -->
@@ -295,7 +293,7 @@
                                         </a>
                                     </td>
                                     <td>
-                                        <span class="badge bg-secondary">{{ file.file_type|title }}</span>
+                                        <span class="badge bg-secondary">{{ file.file_type|file_type_label }}</span>
                                         {% if file.is_spatial %}
                                             <span class="badge bg-info ms-1">GIS</span>
                                         {% endif %}
@@ -342,7 +340,7 @@
                                         </small>
                                         <br>
                                         <small class="text-muted">
-                                            {{ folder.file_count }} files • {{ folder.subfolder_count }} folders
+                                            {{ folder.file_count }} file{{ folder.file_count|pluralize }} • {{ folder.subfolder_count }} folder{{ folder.subfolder_count|pluralize }}
                                         </small>
                                     </div>
                                 </div>
@@ -394,7 +392,7 @@
                     <h4 class="mb-0 me-3">
                         <i class="fas fa-database me-2"></i>Public Data
                     </h4>
-                    <span class="badge bg-secondary">{{ stats.total_public_folders }} folders, {{ stats.total_public_files }} files</span>
+                    <span class="badge bg-secondary">{{ stats.total_public_folders }} folder{{ stats.total_public_folders|pluralize }}, {{ stats.total_public_files }} file{{ stats.total_public_files|pluralize }}</span>
                 </div>
                 
                 <!-- View Toggle -->
@@ -453,7 +451,7 @@
                                         </a>
                                     </td>
                                     <td>
-                                        <span class="badge bg-secondary">{{ file.file_type|title }}</span>
+                                        <span class="badge bg-secondary">{{ file.file_type|file_type_label }}</span>
                                         {% if file.is_spatial %}
                                             <span class="badge bg-info ms-1">GIS</span>
                                         {% endif %}
@@ -480,7 +478,7 @@
                                     <div class="flex-grow-1">
                                         <h6 class="mb-1 fw-bold">{{ folder.name|truncatechars:25 }}</h6>
                                         <small class="text-muted">
-                                            {{ folder.file_count }} files • {{ folder.subfolder_count }} folders
+                                            {{ folder.file_count }} file{{ folder.file_count|pluralize }} • {{ folder.subfolder_count }} folder{{ folder.subfolder_count|pluralize }}
                                         </small>
                                         <br>
                                         <small class="text-muted">
@@ -559,8 +557,8 @@
                     </ul>
                     <div class="text-center mt-2">
                         <small class="text-muted">
-                            Showing {{ page_obj.start_index }} - {{ page_obj.end_index }} of {{ total_items }} items
-                            ({{ stats.total_public_folders }} folders, {{ stats.total_public_files }} files)
+                            Showing {{ page_obj.start_index }} - {{ page_obj.end_index }} of {{ total_items }} item{{ total_items|pluralize }}
+                            ({{ stats.total_public_folders }} folder{{ stats.total_public_folders|pluralize }}, {{ stats.total_public_files }} file{{ stats.total_public_files|pluralize }})
                         </small>
                     </div>
                 </nav>
@@ -580,8 +578,8 @@
             <h3 class="mt-3 text-muted">No Public Content Yet</h3>
             <p class="text-muted">Check back later for shared agricultural data and research files.</p>
             {% if not user.is_authenticated %}
-            <a href="{% url 'filemanager:register' %}" class="btn btn-primary mt-3">
-                <i class="fas fa-user-plus me-2"></i>Join ADMA Today
+            <a href="{% url 'login' %}" class="btn btn-primary mt-3">
+                <i class="fas fa-sign-in-alt me-2"></i>Sign In
             </a>
             {% endif %}
         </div>

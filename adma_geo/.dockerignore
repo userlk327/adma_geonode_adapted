@@ -1,0 +1,19 @@
+# Kept out of the image built from this directory (docker build adma_geo).
+# The Dockerfile copies the code, then makes media/ and staticfiles/ itself.
+.git
+**/__pycache__
+**/*.pyc
+
+# Secrets: compose reads .env on the host and passes the values in
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Runtime data and leftovers
+media/
+staticfiles/
+celerybeat-schedule*
+chromadb/
+cookies.txt
+=1.0.0

@@ -1,0 +1,53 @@
+# ============================================================================
+# CAUTION WHEN COMBINED WITH docker-compose.adapt.yml
+#
+# adapt.yml mounts //snr18/Adapt at /adapt, and ADMA browses, indexes and
+# opens files on the whole share from there.
+#
+# This file puts ADMA's own uploads INSIDE that same tree, under an
+# adma_geo_production directory. ADMA hides and refuses any directory named
+# adma_geo_production or pg_data (see EXCLUDED_NAMES in
+# filemanager/adapt_share.py), so the two files can coexist ONLY as long as
+# that directory name is kept. Rename it, or drop it from EXCLUDED_NAMES, and
+# every pilot user's private upload shows up on the ADAPT share for anyone
+# with a grant on its parent folder.
+# ============================================================================
+
+# Opt-in override: store ADMA media on the ADAPT share instead of a local
+# Docker volume.
+#
+# This file changes NOTHING unless you name it explicitly:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.share.yml up -d
+#
+# Before first use:
+#
+#   1. Copy the existing uploads out of the current volume, or they are lost:
+#        docker compose exec django tar -cf /tmp/media.tar -C /app/media .
+#        docker cp adma_geo_django:/tmp/media.tar .\media-backup.tar
+#
+#   2. Set ADAPT_SMB_* in .env. Never commit those values.
+#
+#   3. Remove the existing local volume. Docker will NOT change the options of
+#      a volume that already exists, so this step is required and it is
+#      destructive:
+#        docker compose down
+#        docker volume rm adma_geo_media
+#
+#   4. Bring the stack up with both files, then restore the uploads.
+#
+# Notes:
+#   - Every write reaches the share as ADAPT_SMB_USER. The share's per-team
+#     permissions are replaced by that one account's rights.
+#   - Use a dedicated service account scoped to this one directory.
+#   - If the path contains spaces and the mount fails, that is the first
+#     suspect. A share or symlink without spaces avoids it.
+#   - Do NOT do this for adma_geo_db. Postgres over SMB risks corruption.
+
+volumes:
+  adma_geo_media:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: '//${ADAPT_SMB_HOST}/${ADAPT_SMB_PATH}'
+      o: 'username=${ADAPT_SMB_USER},password=${ADAPT_SMB_PASSWORD},domain=${ADAPT_SMB_DOMAIN},uid=1000,gid=1000,file_mode=0770,dir_mode=0770,vers=3.0'

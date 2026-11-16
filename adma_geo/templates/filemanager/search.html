@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load folder_counts humanize file_display %}
 
 {% block title %}Search - ADMA{% endblock %}
 
@@ -311,7 +312,7 @@
                     <i class="fas fa-search-plus me-2"></i>Search Results
                 </h4>
                 {% if total_results > 0 %}
-                    <span class="badge bg-secondary">{{ total_results }} results found</span>
+                    <span class="badge bg-secondary">{{ total_results|intcomma }} result{{ total_results|pluralize }} found</span>
                 {% endif %}
             </div>
             
@@ -345,6 +346,44 @@
                             </thead>
                             <tbody>
                                 {% for result in search_results %}
+                                {% if result.type == 'adapt_file' or result.type == 'adapt_folder' %}
+                                <tr onclick="window.location.href='{{ result.url|escapejs }}';" style="cursor: pointer;">
+                                    <td>
+                                        <div class="d-flex align-items-center">
+                                            {% if result.type == 'adapt_file' %}
+                                                <i class="{{ result.metadata.icon }} file-icon"></i>
+                                            {% else %}
+                                                <i class="fas fa-folder folder-icon"></i>
+                                            {% endif %}
+                                            <div>
+                                                <div class="fw-bold">{{ result.name }}</div>
+                                                <small class="text-muted">
+                                                    {% if result.type == 'adapt_file' %}{{ result.metadata.file_type|file_type_label }} • {% endif %}{{ result.metadata.location }}
+                                                </small>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="badge {% if result.type == 'adapt_file' %}bg-secondary{% else %}bg-primary{% endif %}">
+                                            {% if result.type == 'adapt_file' %}File{% else %}Folder{% endif %}
+                                        </span>
+                                        {% if result.metadata.file_type == 'gis' %}
+                                            <br><span class="badge bg-info">GIS</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small>ADAPT share</small>
+                                        <br>
+                                        <small class="text-muted"><i class="fas fa-lock me-1"></i>Private</small>
+                                    </td>
+                                    <td></td>
+                                    <td>
+                                        <small class="text-muted">
+                                            {% if result.type == 'adapt_file' %}{{ result.metadata.size }}{% else %}{{ result.metadata.summary }}{% endif %}
+                                        </small>
+                                    </td>
+                                </tr>
+                                {% else %}
                                 <tr onclick="window.location.href='{% if result.object.owner == user %}{{ result.object.get_absolute_url }}{% else %}{% if result.type == 'file' %}{% url 'filemanager:public_file_detail' result.object.id %}{% elif result.type == 'folder' %}{% url 'filemanager:public_folder_detail' result.object.id %}{% elif result.type == 'map' %}{% url 'filemanager:map_detail' result.object.id %}{% endif %}{% endif %}';" style="cursor: pointer;">
                                     <td>
                                         <div class="d-flex align-items-center">
@@ -360,14 +399,14 @@
                                                 {% if result.type == 'file' and result.object.is_spatial %}
                                                     <small class="text-muted">
                                                         <span class="badge bg-info me-1">GIS</span>
-                                                        {{ result.object.file_type|title }}
+                                                        {{ result.object.file_type|file_type_label }}
                                                     </small>
                                                 {% elif result.type == 'file' %}
-                                                    <small class="text-muted">{{ result.object.file_type|title }}</small>
+                                                    <small class="text-muted">{{ result.object.file_type|file_type_label }}</small>
                                                 {% elif result.type == 'map' %}
                                                     <small class="text-muted">
                                                         <span class="badge bg-info me-1">GIS</span>
-                                                        {{ result.object.map_layers.count }} layers
+                                                        {% with n=result.object.map_layers.count %}{{ n }} layer{{ n|pluralize }}{% endwith %}
                                                     </small>
                                                 {% endif %}
                                             </div>
@@ -404,13 +443,14 @@
                                             {% if result.type == 'file' %}
                                                 {{ result.object.get_size_display }}
                                             {% elif result.type == 'folder' %}
-                                                {{ result.object.files.count }} files
+                                                {% with counts=result.object|counts_for:user %}{{ counts.files }} file{{ counts.files|pluralize }}{% endwith %}
                                             {% elif result.type == 'map' %}
-                                                {{ result.object.map_layers.count }} layers
+                                                {% with n=result.object.map_layers.count %}{{ n }} layer{{ n|pluralize }}{% endwith %}
                                             {% endif %}
                                         </small>
                                     </td>
                                 </tr>
+                                {% endif %}
                                 {% endfor %}
                             </tbody>
                         </table>
@@ -422,6 +462,36 @@
                     <div class="row">
                         {% for result in search_results %}
                         <div class="col-md-4 col-sm-6 mb-3">
+                            {% if result.type == 'adapt_file' or result.type == 'adapt_folder' %}
+                            <a href="{{ result.url }}" class="text-decoration-none">
+                                <div class="{% if result.type == 'adapt_file' %}file-item{% else %}folder-item{% endif %}">
+                                    {% if result.type == 'adapt_file' %}
+                                        <i class="{{ result.metadata.icon }} file-icon"></i>
+                                    {% else %}
+                                        <i class="fas fa-folder folder-icon"></i>
+                                    {% endif %}
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <h6 class="mb-1 fw-bold">{{ result.name|truncatechars:25 }}</h6>
+                                        </div>
+                                        <small class="text-muted">
+                                            {% if result.type == 'adapt_file' %}
+                                                {{ result.metadata.size }} • {{ result.metadata.file_type|file_type_label }}
+                                                {% if result.metadata.file_type == 'gis' %}
+                                                    <span class="badge bg-info ms-1">GIS</span>
+                                                {% endif %}
+                                            {% else %}
+                                                {{ result.metadata.summary }}
+                                            {% endif %}
+                                        </small>
+                                        <br>
+                                        <small class="text-muted text-break">
+                                            in {{ result.metadata.location }} • <i class="fas fa-lock me-1"></i>Private
+                                        </small>
+                                    </div>
+                                </div>
+                            </a>
+                            {% else %}
                             <a href="{% if result.object.owner == user %}{{ result.object.get_absolute_url }}{% else %}{% if result.type == 'file' %}{% url 'filemanager:public_file_detail' result.object.id %}{% elif result.type == 'folder' %}{% url 'filemanager:public_folder_detail' result.object.id %}{% elif result.type == 'map' %}{% url 'filemanager:map_detail' result.object.id %}{% endif %}{% endif %}" class="text-decoration-none">
                                 <div class="{% if result.type == 'file' %}file-item{% elif result.type == 'folder' %}folder-item{% elif result.type == 'map' %}file-item map-item{% endif %}">
                                     {% if result.type == 'file' %}
@@ -440,14 +510,14 @@
                                         </div>
                                         <small class="text-muted">
                                             {% if result.type == 'file' %}
-                                                {{ result.object.get_size_display }} • {{ result.object.file_type|title }}
+                                                {{ result.object.get_size_display }} • {{ result.object.file_type|file_type_label }}
                                                 {% if result.object.is_spatial %}
                                                     <span class="badge bg-info ms-1">GIS</span>
                                                 {% endif %}
                                             {% elif result.type == 'folder' %}
-                                                {{ result.object.files.count }} files • {{ result.object.subfolders.count }} folders
+                                                {% with counts=result.object|counts_for:user %}{{ counts.files }} file{{ counts.files|pluralize }} • {{ counts.subfolders }} folder{{ counts.subfolders|pluralize }}{% endwith %}
                                             {% elif result.type == 'map' %}
-                                                {{ result.object.map_layers.count }} layers • Map
+                                                {% with n=result.object.map_layers.count %}{{ n }} layer{{ n|pluralize }}{% endwith %} • Map
                                                 <span class="badge bg-info ms-1">GIS</span>
                                             {% endif %}
                                         </small>
@@ -463,6 +533,7 @@
                                     </div>
                                 </div>
                             </a>
+                            {% endif %}
                         </div>
                         {% endfor %}
                     </div>
@@ -512,7 +583,7 @@
                     </ul>
                     <div class="text-center mt-2">
                         <small class="text-muted">
-                            Showing {{ page_obj.start_index }} - {{ page_obj.end_index }} of {{ total_results }} results
+                            Showing {{ page_obj.start_index|intcomma }} - {{ page_obj.end_index|intcomma }} of {{ total_results|intcomma }} result{{ total_results|pluralize }}
                         </small>
                     </div>
                 </nav>
@@ -584,6 +655,13 @@
 
 {% block extra_js %}
 <script>
+// Text from the server, made safe to place in innerHTML
+function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = String(value);
+    return div.innerHTML.replace(/"/g, '&quot;');
+}
+
 // View toggle functionality
 function toggleView(viewType) {
     const listView = document.getElementById('listView');
@@ -638,10 +716,10 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const item = document.createElement('div');
                                 item.className = 'suggestion-item';
                                 item.innerHTML = `
-                                    <i class="${suggestion.icon} suggestion-icon"></i>
+                                    <i class="${escapeHtml(suggestion.icon)} suggestion-icon"></i>
                                     <div class="flex-grow-1">
-                                        <div class="fw-bold">${suggestion.name}</div>
-                                        <small class="text-muted">${suggestion.type}${suggestion.similarity !== undefined ? ' • Similarity: ' + suggestion.similarity : ''}</small>
+                                        <div class="fw-bold">${escapeHtml(suggestion.name)}</div>
+                                        <small class="text-muted">${escapeHtml(suggestion.type)}${suggestion.path ? ' • ADAPT/' + escapeHtml(suggestion.path) : ''}${suggestion.similarity !== undefined ? ' • Similarity: ' + escapeHtml(suggestion.similarity) : ''}</small>
                                     </div>
                                 `;
                                 item.onclick = () => {

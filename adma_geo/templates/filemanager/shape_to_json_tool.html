@@ -536,7 +536,7 @@ function createFolderNode(folder, mode, isPublic) {
         <div class="tree-icon folder-icon"><i class="fas fa-folder"></i></div>
         <span class="tree-label">${folder.name}</span>
         ${isPublic ? '<span class="badge bg-info tree-badge">Public</span>' : ''}
-        ${folder.file_count !== undefined ? `<span class="badge bg-secondary tree-badge">${folder.file_count} files</span>` : ''}
+        ${folder.file_count !== undefined ? `<span class="badge bg-secondary tree-badge">${folder.file_count} file${folder.file_count === 1 ? '' : 's'}</span>` : ''}
     `;
     
     node.appendChild(content);

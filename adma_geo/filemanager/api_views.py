@@ -11,21 +11,48 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
-from django.http import FileResponse, Http404, HttpResponse
-from django.shortcuts import get_object_or_404
+from django.http import FileResponse, HttpResponse
 from django.db import transaction
+from contextlib import nullcontext
 import zipfile
 import io
 import os
+import stat
+from datetime import datetime, timezone
+from urllib.parse import urlencode
+from django.core.paginator import Paginator
+from django.urls import reverse
 from django.utils.text import slugify
 
-from .models import File, Folder
+from .middleware import PASSWORD_CHANGE_MESSAGE
+from .models import File, Folder, must_change_password
+from . import adapt_share, adapt_storage, adapt_views, permissions
 from .serializers import (
-    FileUploadSerializer, FolderUploadSerializer, FileDownloadSerializer,
-    FolderDownloadSerializer, TokenCreateSerializer, FileSerializer, FolderSerializer
+    FileUploadSerializer, FolderUploadSerializer, TokenCreateSerializer, FileSerializer, FolderSerializer
 )
-from .views import generate_unique_name
+from .views import UploadRefused, adapt_file_json, adapt_folder_json, generate_unique_name, upload_target
 from .tasks import process_gis_file_task
+
+
+def _files_in(user, folder):
+    """Files of `folder` the user may list: own files, every file of a granted ADAPT folder, else public ones."""
+    if folder.owner == user:
+        return File.objects.filter(folder=folder, owner=user)
+    if folder.third_party_source == 'adapt':
+        if permissions.can_list_files(user, folder):
+            return File.objects.filter(folder=folder)
+        return File.objects.none()
+    return File.objects.filter(folder=folder, is_public=True)
+
+
+def _subfolders_in(user, folder):
+    """Subfolders of `folder` the user may list. ADAPT children are checked one by one."""
+    if folder.owner == user:
+        return Folder.objects.filter(parent=folder, owner=user)
+    children = Folder.objects.filter(parent=folder)
+    if folder.third_party_source == 'adapt':
+        return children.filter(pk__in=[f.pk for f in permissions.filter_readable(user, children)])
+    return children.filter(is_public=True)
 
 
 @api_view(['POST'])
@@ -53,6 +80,9 @@ def create_token(request):
         password = serializer.validated_data['password']
         
         user = authenticate(username=username, password=password)
+        if user and must_change_password(user):
+            # The one-time password must not buy a token that outlives it.
+            return Response({'error': PASSWORD_CHANGE_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         if user:
             token, created = Token.objects.get_or_create(user=user)
             return Response({
@@ -70,6 +100,17 @@ def create_token(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _adapt_file_json(upload):
+    """How the API reports a file written to the ADAPT share: the web views' keys plus the API's own.
+
+    Only a file with a record (a GIS file) has a download_url here.
+    """
+    entry = adapt_file_json(upload)
+    entry['is_public'] = False
+    entry['download_url'] = f'/api/v1/files/{upload.record.id}/download/' if upload.record else None
+    return entry
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def api_upload_files(request):
@@ -83,6 +124,7 @@ def api_upload_files(request):
     Form data:
     - files: List of files to upload
     - folder_id: Optional UUID of target folder
+    - adapt_path: Optional folder on the ADAPT share to upload into, instead of folder_id
     - is_public: Boolean (default: false)
     
     Returns:
@@ -108,22 +150,25 @@ def api_upload_files(request):
     folder_id = serializer.validated_data.get('folder_id')
     is_public = serializer.validated_data.get('is_public', False)
     
-    # Get folder if specified
-    folder = None
-    if folder_id:
-        try:
-            folder = Folder.objects.get(id=folder_id, owner=request.user)
-        except Folder.DoesNotExist:
-            return Response(
-                {'error': 'Folder not found or access denied'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+    try:
+        folder, adapt_folder = upload_target(request.user, folder_id, serializer.validated_data.get('adapt_path'))
+    except UploadRefused as refused:
+        message = 'Folder not found or access denied' if refused.status == 404 else str(refused)
+        return Response({'error': message}, status=refused.status)
+    to_adapt = adapt_folder is not None
     
     uploaded_files = []
     
     try:
-        with transaction.atomic():
+        # A rollback cannot unwrite the share, so ADAPT uploads are not wrapped in
+        # a transaction: a GIS file that reaches the share keeps its record.
+        with nullcontext() if to_adapt else transaction.atomic():
             for uploaded_file in files:
+                if to_adapt:
+                    upload = adapt_storage.upload_file(adapt_folder, uploaded_file, owner=request.user)
+                    uploaded_files.append(_adapt_file_json(upload))
+                    continue
+
                 # Generate unique filename if duplicate exists
                 unique_filename = generate_unique_name(
                     uploaded_file.name,
@@ -131,7 +176,7 @@ def api_upload_files(request):
                     folder=folder,
                     is_folder=False
                 )
-                
+
                 # Create file object
                 file_obj = File.objects.create(
                     name=unique_filename,
@@ -162,6 +207,9 @@ def api_upload_files(request):
             'message': f'Successfully uploaded {len(uploaded_files)} files'
         }, status=status.HTTP_201_CREATED)
         
+    except adapt_storage.AdaptWriteError as e:
+        # Files before this one are on the share already; say which.
+        return Response({'error': str(e), 'files': uploaded_files}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response(
             {'error': f'Upload failed: {str(e)}'}, 
@@ -183,6 +231,7 @@ def api_upload_folders(request):
     - files: List of files with folder paths
     - file_paths: List of corresponding folder paths
     - folder_id: Optional UUID of parent folder
+    - adapt_path: Optional folder on the ADAPT share to upload into, instead of folder_id
     - is_public: Boolean (default: false)
     
     Returns:
@@ -208,18 +257,27 @@ def api_upload_folders(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    # Get parent folder if specified
-    parent_folder = None
-    if folder_id:
-        try:
-            parent_folder = Folder.objects.get(id=folder_id, owner=request.user)
-        except Folder.DoesNotExist:
-            return Response(
-                {'error': 'Parent folder not found or access denied'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+    try:
+        parent_folder, adapt_parent = upload_target(request.user, folder_id, serializer.validated_data.get('adapt_path'))
+    except UploadRefused as refused:
+        message = 'Parent folder not found or access denied' if refused.status == 404 else str(refused)
+        return Response({'error': message}, status=refused.status)
     
     try:
+        if adapt_parent is not None:
+            # Merged into the folders already on the share. Nothing is recorded
+            # in ADMA except GIS files (see adapt_storage.upload_file).
+            tree = adapt_storage.upload_tree(adapt_parent, zip(files, file_paths), request.user)
+            return Response({
+                'success': True,
+                'folders_created': len(tree.folders),
+                'files_uploaded': len(tree.files),
+                'folders': [adapt_folder_json(rel) for rel in tree.folders],
+                'files': [_adapt_file_json(upload) for upload in tree.files],
+                'skipped': tree.skipped,
+                'message': f'Successfully uploaded folder structure: {len(tree.folders)} folders, {len(tree.files)} files'
+            }, status=status.HTTP_201_CREATED)
+
         with transaction.atomic():
             # Use the same logic as the original upload_folders view
             # This is a simplified version - you can expand it based on your needs
@@ -273,7 +331,7 @@ def api_upload_folders(request):
                     folder=current_folder,
                     is_folder=False
                 )
-                
+
                 file_obj = File.objects.create(
                     name=unique_filename,
                     file=uploaded_file,
@@ -295,6 +353,8 @@ def api_upload_folders(request):
                 'message': f'Successfully uploaded folder structure: {folders_created} folders, {files_uploaded} files'
             }, status=status.HTTP_201_CREATED)
             
+    except adapt_storage.AdaptWriteError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response(
             {'error': f'Folder upload failed: {str(e)}'}, 
@@ -317,7 +377,7 @@ def api_download_file(request, file_id):
         file_obj = File.objects.get(id=file_id)
         
         # Check permissions
-        if file_obj.owner != request.user and not file_obj.is_public:
+        if not permissions.can_read(request.user, file_obj):
             return Response(
                 {'error': 'File not found or access denied'}, 
                 status=status.HTTP_404_NOT_FOUND
@@ -386,17 +446,12 @@ def api_list_files(request):
         try:
             folder = Folder.objects.get(id=folder_id)
             # User can access if they own the folder OR the folder is public
-            if folder.owner != request.user and not folder.is_public:
+            if not permissions.can_read(request.user, folder):
                 return Response(
                     {'error': 'You do not have permission to access this folder'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            # List files in this folder (user's own files OR public files in public folder)
-            if folder.owner == request.user:
-                queryset = File.objects.filter(folder_id=folder_id, owner=request.user)
-            else:
-                # For public folders owned by others, only show public files
-                queryset = File.objects.filter(folder_id=folder_id, is_public=True)
+            queryset = _files_in(request.user, folder)
         except Folder.DoesNotExist:
             return Response(
                 {'error': 'Folder not found'},
@@ -467,17 +522,12 @@ def api_list_folders(request):
         try:
             parent_folder = Folder.objects.get(id=parent_id)
             # User can access if they own the folder OR the folder is public
-            if parent_folder.owner != request.user and not parent_folder.is_public:
+            if not permissions.can_read(request.user, parent_folder):
                 return Response(
                     {'error': 'You do not have permission to access this folder'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            # List subfolders in this parent folder
-            if parent_folder.owner == request.user:
-                queryset = Folder.objects.filter(parent_id=parent_id, owner=request.user)
-            else:
-                # For public folders owned by others, only show public subfolders
-                queryset = Folder.objects.filter(parent_id=parent_id, is_public=True)
+            queryset = _subfolders_in(request.user, parent_folder)
         except Folder.DoesNotExist:
             return Response(
                 {'error': 'Parent folder not found'},
@@ -525,7 +575,7 @@ def api_download_folder(request, folder_id):
         folder = Folder.objects.get(id=folder_id)
         
         # Check permissions
-        if folder.owner != request.user and not folder.is_public:
+        if not permissions.can_read(request.user, folder):
             return Response(
                 {'error': 'Folder not found or access denied'}, 
                 status=status.HTTP_404_NOT_FOUND
@@ -546,7 +596,7 @@ def api_download_folder(request, folder_id):
                 nonlocal file_count, total_size
                 
                 # Add files from current folder
-                files = File.objects.filter(folder=current_folder, owner=request.user)
+                files = _files_in(request.user, current_folder)
                 for file_obj in files:
                     try:
                         # Create file path in ZIP
@@ -562,13 +612,13 @@ def api_download_folder(request, folder_id):
                         file_count += 1
                         total_size += file_obj.file_size
                         
-                    except Exception as e:
+                    except Exception:
                         # Skip files that can't be read, but continue with others
                         continue
                 
                 # Recursively add subfolders if requested
                 if include_subfolders:
-                    subfolders = Folder.objects.filter(parent=current_folder, owner=request.user)
+                    subfolders = _subfolders_in(request.user, current_folder)
                     for subfolder in subfolders:
                         if zip_path:
                             subfolder_path = f"{zip_path}/{subfolder.name}"
@@ -632,7 +682,7 @@ def api_folder_info(request, folder_id):
         folder = Folder.objects.get(id=folder_id)
         
         # Check permissions
-        if folder.owner != request.user and not folder.is_public:
+        if not permissions.can_read(request.user, folder):
             return Response(
                 {'error': 'Folder not found or access denied'}, 
                 status=status.HTTP_404_NOT_FOUND
@@ -644,12 +694,12 @@ def api_folder_info(request, folder_id):
             total_size = 0
             
             # Count files in current folder
-            files = File.objects.filter(folder=current_folder, owner=request.user)
+            files = _files_in(request.user, current_folder)
             file_count += files.count()
             total_size += sum(f.file_size for f in files)
             
             # Recursively count subfolders
-            subfolders = Folder.objects.filter(parent=current_folder, owner=request.user)
+            subfolders = _subfolders_in(request.user, current_folder)
             for subfolder in subfolders:
                 sub_count, sub_size = count_folder_contents(subfolder)
                 file_count += sub_count
@@ -669,7 +719,7 @@ def api_folder_info(request, folder_id):
             'zip_filename': zip_filename,
             'file_count': file_count,
             'total_size': total_size,
-            'total_size_display': _format_file_size(total_size),
+            'total_size_display': File.describe_size(total_size),
             'is_public': folder.is_public,
             'created_at': folder.created_at,
             'download_url': f'/api/v1/folders/{folder.id}/download/'
@@ -687,15 +737,173 @@ def api_folder_info(request, folder_id):
         )
 
 
-def _format_file_size(size_bytes):
-    """Helper function to format file size in human-readable format"""
-    if size_bytes == 0:
-        return "0 B"
-    
-    size_names = ["B", "KB", "MB", "GB", "TB"]
-    i = 0
-    while size_bytes >= 1024 and i < len(size_names) - 1:
-        size_bytes /= 1024.0
-        i += 1
-    
-    return f"{size_bytes:.1f} {size_names[i]}"
+# --------------------------------------------------------- ADAPT share by path
+#
+# The share is read live from the mount and addressed by path, as on the
+# /adapt/ pages: same grants, same refusals, and no database rows.
+
+ADAPT_PAGE_SIZE = 100
+ADAPT_MAX_PAGE_SIZE = 1000
+ADAPT_FOLDER_NOT_FOUND = 'Folder not found'
+ADAPT_FILE_NOT_FOUND = 'File not found'
+
+
+def _whole_number(request, name, default):
+    """Query parameter `name` as an integer of at least 1, `default` when absent, None when it is not one."""
+    raw = request.query_params.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 1 else None
+
+
+def _bad_request(message, **extra):
+    return Response({'error': message, **extra}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _may_download(user, rel):
+    """Whether `user` may fetch file `rel`: granted, and not a name ADMA hides."""
+    return (permissions.can_read_path(user, rel, is_dir=False)
+            and not adapt_share.is_hidden(adapt_share.name(rel), is_dir=False))
+
+
+def _adapt_entry(entry, rel, folder_path):
+    """One listed entry as the API returns it; files are stat'ed for size and modified time."""
+    item = {'name': entry.name, 'path': adapt_share.join(rel, entry.name), 'is_dir': entry.is_dir}
+    if not entry.is_dir:
+        info = adapt_views._stat(os.path.join(folder_path, entry.name))
+        item['size'] = info.st_size if info else None
+        item['modified'] = datetime.fromtimestamp(info.st_mtime, timezone.utc) if info else None
+    return item
+
+
+def _open_regular_file(path):
+    """The regular file at `path` open for reading, or None.
+
+    A link in the last place is refused (O_NOFOLLOW), and a pipe or device
+    found there, even one swapped in since the path was checked, is neither
+    waited on (O_NONBLOCK) nor served.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            return os.fdopen(fd, 'rb')
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def api_adapt_list(request):
+    """
+    List one folder of the ADAPT share by path, as its /adapt/ page shows it.
+
+    GET /api/v1/adapt/?path=Soils/2024&page=1&page_size=100
+    Authorization: Token your_api_token
+
+    Query parameters:
+    - path: the folder on the share; empty or absent for the top. Slashes or backslashes.
+    - page: page number, from 1 (default 1)
+    - page_size: entries per page (default 100; larger than 1000 counts as 1000)
+
+    Folders come first, then files, each by name without case. A folder the
+    user may open only on the way to a grant lists just the branches leading
+    there, and no files. Only the files on the requested page are read for
+    size and modified time.
+
+    Returns:
+    {
+        "path": "Soils",
+        "entries": [
+            {"name": "2024", "path": "Soils/2024", "is_dir": true},
+            {"name": "cores.csv", "path": "Soils/cores.csv", "is_dir": false,
+             "size": 8, "modified": "2023-11-14T22:13:20Z"}
+        ],
+        "count": 2,
+        "page": 1,
+        "page_size": 100,
+        "page_count": 1
+    }
+
+    404 for any path the user may not see, whether or not it exists. 400 for
+    a file path (with the file's download_url), or for a page or page_size
+    that is not a whole number in range.
+    """
+    user = request.user
+    not_found = Response({'error': ADAPT_FOLDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        rel = adapt_share.normalize(request.query_params.get('path', ''))
+        path = adapt_share.resolve(rel)
+    except adapt_share.AdaptPathError:
+        return not_found
+    if rel and os.path.isfile(path):
+        if not _may_download(user, rel):
+            return not_found
+        download_url = f"{reverse('api:adapt_download')}?{urlencode({'path': rel})}"
+        return _bad_request(f'"{rel}" is a file, not a folder. Fetch it from download_url.',
+                            download_url=download_url)
+    if not permissions.can_read_path(user, rel):
+        return not_found
+    try:
+        entries = adapt_share.list_folder(rel)
+    except adapt_share.AdaptPathError:
+        return not_found
+
+    visible = permissions.visible_children(user, rel)
+    if visible is not None:
+        # Open only on the way to a grant: just the branches that lead there.
+        entries = [e for e in entries if e.is_dir and e.name.casefold() in visible]
+
+    page_size = _whole_number(request, 'page_size', ADAPT_PAGE_SIZE)
+    if page_size is None:
+        return _bad_request('page_size must be a whole number of at least 1')
+    paginator = Paginator(entries, min(page_size, ADAPT_MAX_PAGE_SIZE))
+    number = _whole_number(request, 'page', 1)
+    if number is None or number > paginator.num_pages:
+        return _bad_request(f'page must be a whole number from 1 to {paginator.num_pages}')
+    page = paginator.page(number)
+
+    return Response({
+        'path': rel,
+        'entries': [_adapt_entry(entry, rel, path) for entry in page.object_list],
+        'count': paginator.count,
+        'page': number,
+        'page_size': paginator.per_page,
+        'page_count': paginator.num_pages,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def api_adapt_download(request):
+    """
+    Download one file from the ADAPT share by path.
+
+    GET /api/v1/adapt/download/?path=Soils/cores.csv
+    Authorization: Token your_api_token
+
+    Streams the file as an attachment, typed from its name. Nothing is
+    recorded in the database. 404 unless the user's grants reach the file
+    and it is a regular file ADMA shows: folders, links, hidden and excluded
+    names, and paths that leave the share all answer 404.
+    """
+    not_found = Response({'error': ADAPT_FILE_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        rel = adapt_share.normalize(request.query_params.get('path', ''))
+        path = adapt_share.resolve(rel)
+    except adapt_share.AdaptPathError:
+        return not_found
+    if not rel or not _may_download(request.user, rel):
+        return not_found
+    filelike = _open_regular_file(path)
+    if filelike is None:
+        return not_found
+    return FileResponse(filelike, as_attachment=True, filename=adapt_share.name(rel))

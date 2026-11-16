@@ -547,9 +547,9 @@ def _fetch(rec, uid, hcc_user, rdir):
     from django.contrib.auth import get_user_model
     from .models import Folder, File
     user = get_user_model().objects.filter(id=rec["user_id"]).first()
-    team = Folder.objects.filter(id=rec["team_id"]).first()
-    if not user or not team:
-        raise RuntimeError("The user or team folder no longer exists.")
+    team = S.rec_team(rec)
+    if not user:
+        raise RuntimeError("The user no longer exists.")
     topic = S._child(S.person_folder(team, user, S.REPORTS), rec.get("topic") or "Other", user)
     run_folder = S._new_folder(topic, f"{S._now():%Y-%m-%d_%H%M}_{Path(rec['script']).stem}", user)
     S._update(rec["run_id"], output_folder_id=str(run_folder.id), output_path=T._folder_path(run_folder.id))

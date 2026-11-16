@@ -1,11 +1,11 @@
 """
 Management command to set up the ADAPT root data folder.
 Creates the top-level "ADAPT" folder that appears under Third Parties.
-Run sync_adapt afterward to import the files.
+Run index_adapt afterward to build the search index and folder totals.
 """
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
-from filemanager.models import Folder, File
+from filemanager.models import Folder
 
 User = get_user_model()
 
@@ -47,14 +47,14 @@ class Command(BaseCommand):
             existing_folder.delete()
 
         adapt_folder = Folder.objects.create(
-            name='ADAPT', owner=owner, parent=None, is_public=True,
+            name='ADAPT', owner=owner, parent=None, is_public=False,
             is_third_party=True, third_party_source='adapt', third_party_id='adapt_root',
         )
 
         self.stdout.write(self.style.SUCCESS('Successfully created ADAPT root folder!'))
         self.stdout.write(f'  Folder ID: {adapt_folder.id}')
         self.stdout.write('')
-        self.stdout.write('Next step: python manage.py sync_adapt --once')
+        self.stdout.write('Next step: python manage.py index_adapt')
 
     def _make_folder_public_recursive(self, folder):
         folders_updated = 0

@@ -23,4 +23,8 @@ urlpatterns = [
     path('folders/upload/', api_views.api_upload_folders, name='upload_folders'),
     path('folders/<uuid:folder_id>/download/', api_views.api_download_folder, name='download_folder'),
     path('folders/<uuid:folder_id>/info/', api_views.api_folder_info, name='folder_info'),
+
+    # ADAPT share, by path
+    path('adapt/', api_views.api_adapt_list, name='adapt_list'),
+    path('adapt/download/', api_views.api_adapt_download, name='adapt_download'),
 ]

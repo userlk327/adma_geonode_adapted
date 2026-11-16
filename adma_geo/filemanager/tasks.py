@@ -2,9 +2,12 @@
 Celery tasks for processing GIS files and managing embeddings
 """
 from celery import shared_task
+from celery.exceptions import Retry
 from django.contrib.auth import get_user_model
 from .models import File, Folder
-from .gis_utils import process_gis_file, publish_to_geoserver, bundle_and_publish_shapefile
+from .gis_read import ShapefilePartsMissing
+from .permissions import ADAPT_DELETE_MESSAGE, touches_adapt
+from .gis_utils import process_gis_file, publish_to_geoserver
 from datetime import date
 import json
 import logging
@@ -12,10 +15,36 @@ import logging
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
+# How often, ten seconds apart, processing looks again for the other parts of a
+# shapefile uploaded one file at a time before it gives up.
+SHAPEFILE_PART_RETRIES = 6
+
+
+def queue_gis_processing(file_obj):
+    """Start processing a spatial file that is still 'pending', once.
+
+    ADAPT records are made 'pending' when someone opens a file and nothing
+    processes them until someone asks for the map. The status moves to
+    'processing' in the same UPDATE that claims the file, so a page reloaded
+    while it waits does not queue it twice. Returns True if this call queued it.
+    """
+    from django.db import transaction
+
+    claimed = File.objects.filter(pk=file_obj.pk, gis_status='pending').update(
+        gis_status='processing', processing_log='Queued for processing',
+    )
+    if claimed:
+        file_obj.gis_status = 'processing'
+        file_obj.processing_log = 'Queued for processing'
+        file_id = str(file_obj.pk)
+        transaction.on_commit(lambda: process_gis_file_task.delay(file_id))
+    return bool(claimed)
+
+
 @shared_task(bind=True)
 def process_gis_file_task(self, file_id):
     """
-    Process a GIS file in the background
+    Process a GIS file in the background: read its coordinate system and extent, then publish it
     """
     try:
         file_obj = File.objects.get(id=file_id)
@@ -26,7 +55,13 @@ def process_gis_file_task(self, file_id):
         file_obj.save()
         
         # Process the file
-        success, message = process_gis_file(file_obj)
+        try:
+            success, message = process_gis_file(file_obj)
+        except ShapefilePartsMissing as missing:
+            # Parts uploaded one by one may still be on their way.
+            if self.request.retries < SHAPEFILE_PART_RETRIES:
+                raise self.retry(countdown=10, max_retries=SHAPEFILE_PART_RETRIES)
+            success, message = False, str(missing)
         
         if success:
             file_obj.processing_log += f"\n✓ Processing completed: {message}"
@@ -36,6 +71,12 @@ def process_gis_file_task(self, file_id):
             publish_to_geoserver_task.delay(file_id)
             
             return f"Successfully processed GIS file: {file_obj.name}"
+        elif file_obj.gis_status == 'drone_photo':
+            # Read, but a photo is not a map: nothing to publish, and nothing went wrong.
+            file_obj.processing_log += f"\n✓ Processing completed: {message}"
+            file_obj.save()
+
+            return f"Raw drone photo, not a map: {file_obj.name}"
         else:
             file_obj.gis_status = 'error'
             file_obj.processing_log += f"\n✗ Processing failed: {message}"
@@ -43,6 +84,8 @@ def process_gis_file_task(self, file_id):
             
             return f"Failed to process GIS file: {message}"
             
+    except Retry:
+        raise
     except File.DoesNotExist:
         return f"File with ID {file_id} not found"
     except Exception as e:
@@ -68,14 +111,7 @@ def publish_to_geoserver_task(self, file_id):
         if file_obj.gis_status != 'processed':
             return f"File {file_obj.name} is not in processed state"
         
-        # Check if this is a shapefile that needs bundling
-        if file_obj.name.lower().endswith('.shp'):
-            logger.info(f"Delegating shapefile to delayed publishing task: {file_obj.name}")
-            # Use delayed task to allow all components to upload first
-            delayed_shapefile_publish_task.apply_async(args=[file_id], countdown=30)  # Wait 30 seconds
-            return f"Scheduled delayed publishing for shapefile: {file_obj.name}"
-        
-        # Use regular publishing for other file types
+        # Shapefile parts were all found while processing, so every type publishes now
         success, message = publish_to_geoserver(file_obj)
         
         if success:
@@ -128,77 +164,10 @@ def process_folder_gis_files(folder_id):
 @shared_task(bind=True)
 def delayed_shapefile_publish_task(self, file_id, max_retries=5):
     """
-    Delayed task to publish shapefiles after allowing time for all components to upload
+    Kept for tasks queued before shapefiles published straight away: processing now
+    waits for a shapefile's parts, so this publishes as publish_to_geoserver_task does
     """
-    try:
-        file_obj = File.objects.get(id=file_id)
-        
-        # Check if file is still in processed state (not already published)
-        if file_obj.gis_status != 'processed':
-            logger.info(f"Shapefile {file_obj.name} is no longer in processed state: {file_obj.gis_status}")
-            return f"Shapefile {file_obj.name} status: {file_obj.gis_status}"
-        
-        # Check if this is a shapefile
-        if not file_obj.name.lower().endswith('.shp'):
-            logger.warning(f"File {file_obj.name} is not a shapefile, using regular publishing")
-            return publish_to_geoserver_task.delay(file_id)
-        
-        # Get the base name and check for components
-        base_name = file_obj.name.replace('.shp', '')
-        required_exts = ['.shp', '.shx', '.dbf']
-        
-        # Find all related components
-        components = File.objects.filter(
-            owner=file_obj.owner,
-            name__startswith=base_name,
-            folder=file_obj.folder
-        )
-        
-        # Check if we have all required components
-        available_exts = set()
-        for comp in components:
-            parts = comp.name.split('.')
-            if len(parts) >= 2:
-                ext = '.' + parts[-1].lower()
-                available_exts.add(ext)
-        
-        missing_components = [ext for ext in required_exts if ext not in available_exts]
-        
-        if missing_components:
-            # If we're missing components and haven't hit max retries, retry later
-            if self.request.retries < max_retries:
-                logger.info(f"Missing components {missing_components} for {file_obj.name}, retrying in 10 seconds (attempt {self.request.retries + 1}/{max_retries})")
-                raise self.retry(countdown=10, max_retries=max_retries)
-            else:
-                # Max retries reached, log error and continue with what we have
-                logger.error(f"Max retries reached for {file_obj.name}, missing components: {missing_components}")
-                file_obj.gis_status = 'error'
-                file_obj.processing_log += f"\n✗ Missing shapefile components after {max_retries} retries: {', '.join(missing_components)}"
-                file_obj.save()
-                return f"Failed to find all components for {file_obj.name}"
-        
-        # All components available, proceed with bundling and publishing
-        logger.info(f"All components available for {file_obj.name}, proceeding with bundling")
-        success, message = bundle_and_publish_shapefile(file_obj)
-        
-        if success:
-            file_obj.processing_log += f"\n✓ Auto-published to GeoServer: {message}"
-            file_obj.save()
-            logger.info(f"Successfully auto-published shapefile: {file_obj.name}")
-            return f"Successfully auto-published shapefile: {file_obj.name}"
-        else:
-            file_obj.gis_status = 'error'
-            file_obj.processing_log += f"\n✗ Auto-publishing failed: {message}"
-            file_obj.save()
-            logger.error(f"Failed to auto-publish shapefile: {file_obj.name} - {message}")
-            return f"Failed to auto-publish shapefile: {message}"
-            
-    except File.DoesNotExist:
-        return f"File with ID {file_id} not found"
-    except Exception as e:
-        if 'retry' not in str(e):  # Don't log retry exceptions
-            logger.error(f"Error in delayed_shapefile_publish_task: {str(e)}")
-        raise  # Re-raise for Celery to handle retries
+    return publish_to_geoserver_task(file_id)
 
 # NOTE: File embedding generation task removed - no longer needed
 # Search now uses PostgreSQL text matching instead of embeddings
@@ -211,6 +180,19 @@ def delayed_shapefile_publish_task(self, file_id, max_retries=5):
 
 # NOTE: All embedding-related tasks removed - no longer needed
 # Search now uses PostgreSQL text matching instead of embeddings
+
+
+def _keeps_adapt_row(model, item):
+    """True, after logging it, if `item` is or holds ADAPT content, which is never deleted from ADMA.
+
+    delete_item refuses these before queuing a task. One queued before that
+    rule existed is dropped here, and the row it hid is shown again.
+    """
+    if not touches_adapt([item]):
+        return False
+    logger.warning(f"Not deleting {model.__name__.lower()} {item.name} (ID: {item.pk}): {ADAPT_DELETE_MESSAGE}")
+    model.objects.filter(pk=item.pk).update(deletion_in_progress=False)
+    return True
 
 
 @shared_task(bind=True)
@@ -233,6 +215,8 @@ def delete_file_async_task(self, file_id, file_name):
         except File.DoesNotExist:
             logger.warning(f"File {file_name} (ID: {file_id}) not found - may have been already deleted")
             return f"File {file_name} not found - may have been already deleted"
+        if _keeps_adapt_row(File, file_obj):
+            return f"Kept file {file_name}: {ADAPT_DELETE_MESSAGE}"
         
         # Perform complete file deletion
         from .views import delete_file_complete
@@ -266,6 +250,8 @@ def delete_folder_async_task(self, folder_id, folder_name):
         except Folder.DoesNotExist:
             logger.warning(f"Folder {folder_name} (ID: {folder_id}) not found - may have been already deleted")
             return f"Folder {folder_name} not found - may have been already deleted"
+        if _keeps_adapt_row(Folder, folder_obj):
+            return f"Kept folder {folder_name}: {ADAPT_DELETE_MESSAGE}"
         
         # Perform complete folder deletion
         from .views import delete_folder_complete
@@ -290,7 +276,6 @@ def toggle_folder_visibility_recursive_task(self, folder_id, is_public, folder_n
     try:
         from django.apps import apps
         Folder = apps.get_model('filemanager', 'Folder')
-        File = apps.get_model('filemanager', 'File')
         
         logger.info(f"Starting async recursive visibility toggle for folder: {folder_name} (ID: {folder_id}) to {'public' if is_public else 'private'}")
         
@@ -418,7 +403,7 @@ def run_seeding_tool_task(self, file_id, output_dir_id=None):
             return {"success": False, "error": error_msg}
         
         # Get the input file path
-        input_path = file_obj.file.path
+        input_path = file_obj.local_path
         
         # Determine output directory and folder
         from .models import Folder
@@ -623,7 +608,7 @@ def run_shape_to_json_task(self, file_id, output_dir_id=None):
             return {"success": False, "error": error_msg}
         
         # Get the input file path
-        input_path = file_obj.file.path
+        input_path = file_obj.local_path
         
         # Determine output directory and folder
         from .models import Folder
@@ -796,7 +781,7 @@ def run_si_tool_task(
         # Get buffer sectors file (required for all workflows)
         try:
             buffer_file = File.objects.get(id=buffer_sectors_file_id)
-            buffer_sectors_path = buffer_file.file.path
+            buffer_sectors_path = buffer_file.local_path
         except File.DoesNotExist:
             return {"success": False, "error": "Buffer sectors file not found"}
         
@@ -805,7 +790,7 @@ def run_si_tool_task(
         if ndre_file_id:
             try:
                 ndre_file = File.objects.get(id=ndre_file_id)
-                ndre_path = ndre_file.file.path
+                ndre_path = ndre_file.local_path
             except File.DoesNotExist:
                 return {"success": False, "error": "NDRE file not found"}
         
@@ -815,7 +800,7 @@ def run_si_tool_task(
         if csv_file_id:
             try:
                 csv_file = File.objects.get(id=csv_file_id)
-                csv_path = csv_file.file.path
+                csv_path = csv_file.local_path
             except File.DoesNotExist:
                 return {"success": False, "error": "CSV file not found"}
         
@@ -824,7 +809,7 @@ def run_si_tool_task(
         if indicator_block_file_id:
             try:
                 indicator_file = File.objects.get(id=indicator_block_file_id)
-                indicator_block_path = indicator_file.file.path
+                indicator_block_path = indicator_file.local_path
             except File.DoesNotExist:
                 return {"success": False, "error": "Indicator block file not found"}
         
@@ -953,7 +938,7 @@ def run_si_tool_task(
         return result
         
     except Exception as e:
-        logger.exception(f"Error in SI Tool task")
+        logger.exception("Error in SI Tool task")
         return {"success": False, "error": str(e)}
 
 
@@ -1123,7 +1108,6 @@ def sync_realm5_task(self):
     This task is designed to run daily via Celery Beat.
     """
     import json
-    import os
     from datetime import date, timedelta
     from django.conf import settings
     from django.core.files.base import ContentFile
@@ -1860,3 +1844,23 @@ def sync_johndeere_scheduled():
     """
     logger.info("Running scheduled John Deere sync...")
     return sync_johndeere_task.delay()
+
+
+@shared_task
+def index_adapt_task():
+    """Rebuild the ADAPT index that search and folder totals read (see filemanager.adapt_index).
+
+    Celery beat runs this every night. A missing or empty mount fails the task
+    and leaves the index as it was.
+    """
+    from . import adapt_index
+    run = adapt_index.build()
+    logger.info(f"ADAPT index: {run.files} files in {run.folders} folders, "
+                f"{run.removed} dropped, {run.errors} errors")
+    return {
+        'files': run.files,
+        'folders': run.folders,
+        'removed': run.removed,
+        'errors': run.errors,
+        'failed_folders': run.failed_folders.splitlines(),
+    }

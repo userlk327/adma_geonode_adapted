@@ -1,13 +1,15 @@
 """
-ADMA Studio: a writable area inside each ADAPT team folder.
+ADMA Studio: each person's own private working area in ADMA.
 
-    ADAPT/<team>/ADMA Studio/<username>/                    one folder per person, owned by that person
-                                      Reports/<Topic>/      one folder per subject (Weather, Sales, ...)
-                                        <date>_<name>/      one folder per script run or saved result
-                                          Figures/          images
-                                          Results/          tables, text and other output files
+    ADMA Studio/                        a top-level folder per person, owned by them and private
+      <team>/                           the ADAPT team folder the data came from ("My data" for ADMA files)
+        Reports/<Topic>/                one folder per subject (Weather, Sales, ...)
+          <date>_<name>/                one folder per script run or saved result
+            Figures/                    images
+            Results/                    tables, text and other output files
 
-ADAPT itself stays read-only: ADMA Studio folders and files are stored in ADMA's own storage.
+ADAPT itself stays read-only: ADMA Studio folders and files are stored in ADMA's own storage, and are
+private to their owner (results of ADAPT data are only for those with access to it).
 Scripts never run inside ADMA. They run in the separate studio-runner container (no network, no
 ADMA secrets), and only after the user clicks Run. ADMA then copies the results into the Studio.
 """
@@ -28,6 +30,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse, HttpResponseForbidden, Http404
 
 from .models import Folder, File
+from . import askadma_access as AX
 from . import askadma_tools as T
 
 STUDIO_NAME = "ADMA Studio"
@@ -44,9 +47,12 @@ MAX_IMPORT_FILES = 1000
 CONFIRM_MINUTES = 30
 RUNNER_START_SECONDS = 90   # how long to wait for the runner to pick up a job
 
-STUDIO_HINT = (" Each ADAPT team folder has an 'ADMA Studio' folder: every person has their own folder there "
-               "(ADMA Studio/<username>). Script runs and saved results go to Reports/<Topic>/ in it, one folder "
-               "per run or saved result, with Figures/ and Results/ inside. For run_script and save_report, set "
+NO_TEAM = "My data"   # Studio folder for results of the person's own ADMA files
+
+STUDIO_HINT = (" Every person has their own private ADMA Studio folder, with one folder per ADAPT team the data "
+               "came from (ADMA Studio/<team>, or ADMA Studio/My data for their own files). Script runs and saved "
+               "results go to Reports/<Topic>/ in it, one folder per run or saved result, with Figures/ and "
+               "Results/ inside. For run_script and save_report, set "
                "topic to one or two words naming what the data is about (Weather, Sales, Soil Moisture, "
                "Cattle Photos), and keep using the same topic for the same subject. ADAPT data itself is "
                "read-only. A script only runs after the user clicks Run on the card that run_script shows, so "
@@ -85,34 +91,18 @@ def _now():
 
 # --------------------------------------------------------------- folders --
 
-def _adapt_root():
-    return Folder.objects.filter(name="ADAPT", parent=None, third_party_source="adapt").first()
+def team_of_file(fi):
+    """The ADAPT team (first folder on the share) a file is in, or NO_TEAM for the person's own ADMA files."""
+    rel = AX.path_of(fi)
+    return AX.team_of(rel) if rel else NO_TEAM
 
 
-def _parent_id(folder_id):
-    fc = T._folders()
-    if "parents" in fc and folder_id in fc["parents"]:
-        return fc["parents"][folder_id]
-    f = Folder.objects.filter(id=folder_id).first()
-    return f.parent_id if f else None
-
-
-def team_of(folder_id):
-    """The ADAPT team folder (a direct child of ADAPT) that contains folder_id, or None."""
-    root = _adapt_root()
-    if not root or folder_id is None:
-        return None
-    current, steps = folder_id, 0
-    while current is not None and steps < 80:
-        parent = _parent_id(current)
-        if str(parent) == str(root.id):
-            return Folder.objects.filter(id=current).first()
-        current, steps = parent, steps + 1
-    return None
+def team_of_item(item):
+    return AX.team_of(item["adapt_rel"]) if item.get("adapt_rel") else NO_TEAM
 
 
 def _child(parent, name, owner):
-    """Get or create a public ADMA Studio folder. An existing folder whose name differs only in case is reused."""
+    """Get or create a private ADMA Studio folder. An existing folder whose name differs only in case is reused."""
     folder = Folder.objects.filter(name=name, parent=parent, owner=owner).first()
     if folder:
         return folder
@@ -121,7 +111,7 @@ def _child(parent, name, owner):
     if folder:
         return folder
     try:
-        folder = Folder.objects.create(name=name, parent=parent, owner=owner, is_public=True,
+        folder = Folder.objects.create(name=name, parent=parent, owner=owner, is_public=False,
                                        is_third_party=False, third_party_source=STUDIO_TAG)
     except Exception:
         folder = Folder.objects.filter(name=name, parent=parent, owner=owner).first()
@@ -131,37 +121,44 @@ def _child(parent, name, owner):
     return folder
 
 
-def studio_root(team):
-    return _child(team, STUDIO_NAME, team.owner)
+def user_studio(user):
+    """The person's own ADMA Studio: a private top-level folder, made on first use."""
+    return _child(None, STUDIO_NAME, user)
 
 
 def person_folder(team, user, sub=None):
-    folder = _child(studio_root(team), user.username, user)
+    """ADMA Studio/<team>/[sub] for the person. team is a team name (an ADAPT team folder, or NO_TEAM)."""
+    folder = _child(user_studio(user), team or NO_TEAM, user)
     return _child(folder, sub, user) if sub else folder
 
 
 def ensure_all_studios():
-    root = _adapt_root()
-    made = []
-    if root:
-        for team in Folder.objects.filter(parent=root).exclude(deletion_in_progress=True):
-            if team.name != STUDIO_NAME:
-                made.append(studio_root(team))
-    return made
+    """Studios are made when first used, one per person; nothing to prepare."""
+    return []
 
 
 def _team_from_text(text):
-    """A team folder from a team name, or from any folder path inside a team."""
-    fid = T._resolve_folder(text)
-    team = team_of(fid)
-    if not team:
-        raise T._UserError(f"'{text}' is not inside one of the ADAPT team folders.")
-    return team
+    """A team name from a team name, an ADAPT path, or 'My data'."""
+    t = str(text or "").strip().strip("/")
+    if not t:
+        raise T._UserError("No team given.")
+    if t.lower() in (NO_TEAM.lower(), "mine", "my files", "personal", "me"):
+        return NO_TEAM
+    teams = AX.teams()
+    for name in teams:
+        if name.lower() == t.lower():
+            return name
+    try:
+        place = T._resolve_place(t)
+    except T._UserError:
+        place = None
+    if place is not None:
+        return AX.team_of(place.rel) if place.kind == "adapt" and place.rel else NO_TEAM
+    raise T._UserError(f"'{text}' is not one of your ADAPT team folders. One of: " + ", ".join(_teams()) + ".")
 
 
 def _teams():
-    root = _adapt_root()
-    return sorted(f.name for f in Folder.objects.filter(parent=root)) if root else []
+    return AX.teams() + [NO_TEAM]
 
 
 def _unique_name(name, exists):
@@ -186,7 +183,7 @@ def save_file(folder, name, content, user):
     name = _unique_name(os.path.basename(name) or "file",
                         lambda n: File.objects.filter(name=n, folder=folder, owner=user).exists())
     payload = ContentFile(content, name=name) if isinstance(content, (bytes, bytearray)) else DjangoFile(content, name=name)
-    fi = File.objects.create(name=name, file=payload, folder=folder, owner=user, is_public=True)
+    fi = File.objects.create(name=name, file=payload, folder=folder, owner=user, is_public=False)
     if getattr(fi, "is_spatial", False):
         try:
             from .tasks import process_gis_file_task
@@ -426,45 +423,53 @@ def _runner_installed():
 
 # ------------------------------------------------------------- proposing --
 
+def _adapt_folder_size(rel):
+    """(files, bytes) in an ADAPT folder and below, from the index, or (None, None) if not known yet."""
+    rows = AX.index_entries()
+    if rows is not None:
+        key = "/".join(AX._share().key(rel)) if rel else ""
+        row = rows.filter(is_dir=True, key=key).values_list("total_files", "total_size").first()
+        if row:
+            return row
+    return None, None
+
+
 def _resolve_input(text, folder=""):
     """A file or folder the script should read. Returns a dict describing it."""
     try:
         fi, _ = T._find_file(text, folder)
-        return {"kind": "file", "id": str(fi.id), "name": fi.name, "folder_id": fi.folder_id,
-                "path": T._folder_path(fi.folder_id) + "/" + fi.name,
-                "adapt_path": fi.third_party_url if fi.is_adapt_reference() else None,
+        rel = AX.path_of(fi)
+        return {"kind": "file", "id": ("adapt:" + rel) if rel else str(fi.id), "name": fi.name,
+                "folder_id": fi.folder_id, "path": T._location(fi) + "/" + fi.name,
+                "adapt_path": fi.third_party_url if fi.is_adapt_reference() else None, "adapt_rel": rel,
                 "size": fi.file_size or 0, "files": 1}
     except T._UserError as file_error:
-        fid = None
+        place = None
         for candidate in ([text, f"{folder}/{text}"] if folder else [text]):
             try:
-                fid = T._resolve_folder(candidate)
+                place = T._resolve_place(candidate)
                 break
             except T._UserError:
                 pass
-        if fid is None:
+        if place is None:
             raise file_error
-    f = Folder.objects.filter(id=fid).first()
+    if place.kind == "adapt":
+        rel = place.rel
+        if not rel:
+            raise T._UserError("The whole ADAPT share is too big to use as a run input; pick a folder inside it.")
+        n, size = _adapt_folder_size(rel)
+        return {"kind": "folder", "id": "adapt:" + rel, "name": rel.rsplit("/", 1)[-1], "folder_id": None,
+                "path": AX.label(rel), "adapt_path": AX.disk_path(rel), "adapt_rel": rel,
+                "size": size or 0, "files": n or 0, "size_unknown": n is None}
+    f = Folder.objects.filter(id=place.id).first()
     item = {"kind": "folder", "id": str(f.id), "name": f.name, "folder_id": f.id, "path": T._folder_path(f.id)}
-    if f.is_third_party and f.third_party_source == "adapt":
-        disk = os.path.join(ADAPT_MOUNT, f.third_party_id or "")
-        if not f.third_party_id or not os.path.isdir(disk):
-            raise T._UserError(f"Could not find the folder {item['path']} on the ADAPT share.")
-        item["adapt_path"] = disk
-        size, n = getattr(f, "cached_total_size", 0) or 0, getattr(f, "cached_total_file_count", 0) or 0
-        if not n:
-            files = T._live_files().filter(folder_id__in=T._subtree(f.id))
-            n = files.count()
-            size = sum(x.file_size or 0 for x in files[:50000])
-        item["size"], item["files"] = size, n
-    else:
-        files = T._live_files().filter(folder_id__in=T._subtree(f.id))
-        n = files.count()
-        size = sum(x.file_size or 0 for x in files[:MAX_INPUT_COPY_FILES + 1])
-        if n > MAX_INPUT_COPY_FILES or size > MAX_INPUT_COPY_BYTES:
-            raise T._UserError(f"{item['path']} is too big to copy for a run ({n} files, {T._human_size(size)}). "
-                               "Limits: 2000 files and 2 GB.")
-        item["adapt_path"], item["size"], item["files"] = None, size, n
+    files = T._live_files().filter(folder_id__in=T._subtree(f.id))
+    n = files.count()
+    size = sum(x.file_size or 0 for x in files[:MAX_INPUT_COPY_FILES + 1])
+    if n > MAX_INPUT_COPY_FILES or size > MAX_INPUT_COPY_BYTES:
+        raise T._UserError(f"{item['path']} is too big to copy for a run ({n} files, {T._human_size(size)}). "
+                           "Limits: 2000 files and 2 GB.")
+    item["adapt_path"], item["adapt_rel"], item["size"], item["files"] = None, None, size, n
     return item
 
 
@@ -483,11 +488,20 @@ def _dedupe_names(items):
 
 
 def _visible(obj, user):
-    return getattr(obj, "is_public", True) or getattr(obj, "owner_id", None) == getattr(user, "id", None)
+    return AX.can_read_row(obj, user)
 
 
 def _resolve_input_id(kind, item_id, user):
-    """An input picked on the card's + Add data browser (by id)."""
+    """An input picked on the card's + Add data browser (by id; ADAPT ids are 'adapt:<path on the share>')."""
+    item_id = str(item_id)
+    if item_id.startswith("adapt:"):
+        set_current_user(user)
+        rel = item_id[len("adapt:"):]
+        if kind == "file" and not AX.can_see_file(rel, user):
+            raise T._UserError("One of the added files is not available to you.")
+        if kind != "file" and not AX.can_see_folder(rel, user):
+            raise T._UserError("One of the added folders is not available to you.")
+        return _resolve_input(AX.label(rel))
     if kind == "file":
         fi = T._live_files().filter(id=str(item_id)).first()
         if not fi or not _visible(fi, user):
@@ -500,33 +514,66 @@ def _resolve_input_id(kind, item_id, user):
 
 
 def browse(user, folder_id=""):
-    """Folders and files for the card's + Add data picker."""
-    def folder_entry(f):
-        adapt = bool(getattr(f, "is_third_party", False)) and getattr(f, "third_party_source", "") == "adapt"
+    """Folders and files for the card's + Add data picker: the person's ADMA folders and the ADAPT folders
+    their grants open. ADAPT ids are 'adapt:<path on the share>'."""
+    set_current_user(user)
+
+    def db_folder(f):
         n, size = getattr(f, "cached_total_file_count", 0) or 0, getattr(f, "cached_total_size", 0) or 0
-        meta = ("ADAPT · read-only" if adapt else "ADMA folder") + (f" · {n:,} files · {T._human_size(size)}" if n else "")
+        meta = "ADMA folder" + (f" · {n:,} files · {T._human_size(size)}" if n else "")
         return {"kind": "folder", "id": str(f.id), "name": f.name, "path": T._folder_path(f.id) + "/",
                 "files": n or None, "size": size or None, "meta": meta}
 
+    def adapt_folder(rel, summary=""):
+        return {"kind": "folder", "id": "adapt:" + rel, "name": rel.rsplit("/", 1)[-1], "path": AX.label(rel) + "/",
+                "files": None, "size": None, "meta": "ADAPT · read-only" + (f" · {summary}" if summary else "")}
+
     if not folder_id:
-        root = _adapt_root()
-        folders = sorted(Folder.objects.filter(parent=root), key=lambda f: f.name.lower()) if root else []
-        own = [f for f in Folder.objects.filter(parent=None) if f is not root and getattr(f, "owner_id", None) == user.id
-               and not getattr(f, "deletion_in_progress", False)]
+        folders = []
+        if AX.share_ready():
+            try:
+                teams = [e for e in AX.entries("", user) if e.is_dir]
+            except AX.AccessError:
+                teams = []
+            sums = AX.summaries([e.rel for e in teams], user)
+            folders += [adapt_folder(e.rel, sums.get(e.rel, "")) for e in teams]
+        own = sorted((f for f in Folder.objects.filter(parent=None, owner_id=user.id)
+                      if not getattr(f, "deletion_in_progress", False)), key=lambda f: f.name.lower())
         return {"folder": {"id": "", "path": "ADMA", "parent_id": None},
-                "folders": [folder_entry(f) for f in folders + own], "files": [], "more_files": 0}
-    f = Folder.objects.filter(id=str(folder_id)).first()
+                "folders": folders + [db_folder(f) for f in own], "files": [], "more_files": 0}
+    folder_id = str(folder_id)
+    if folder_id.startswith("adapt:"):
+        rel = folder_id[len("adapt:"):]
+        try:
+            items = AX.entries(rel, user)
+        except AX.AccessError:
+            raise T._UserError("That folder was not found.")
+        dirs = [e for e in items if e.is_dir]
+        files = [e for e in items if not e.is_dir]
+        sums = AX.summaries([e.rel for e in dirs[:300]], user)
+        out_files = []
+        for e in files[:300]:
+            try:
+                size = os.stat(AX.disk_path(e.rel)).st_size
+            except Exception:
+                size = 0
+            out_files.append({"kind": "file", "id": "adapt:" + e.rel, "name": e.name, "path": AX.label(e.rel),
+                              "files": 1, "size": size, "meta": "ADAPT · read-only · " + T._human_size(size)})
+        parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        return {"folder": {"id": "adapt:" + rel, "path": AX.label(rel), "parent_id": ("adapt:" + parent) if parent else ""},
+                "folders": [adapt_folder(e.rel, sums.get(e.rel, "")) for e in dirs[:300]],
+                "files": out_files, "more_files": max(0, len(files) - 300)}
+    f = Folder.objects.filter(id=folder_id).first()
     if not f or not _visible(f, user):
         raise T._UserError("That folder was not found.")
     subs = [x for x in Folder.objects.filter(parent=f) if _visible(x, user) and not getattr(x, "deletion_in_progress", False)]
     files = [x for x in T._live_files().filter(folder_id=f.id).order_by("name")[:1500] if _visible(x, user)]
     out_files = [{"kind": "file", "id": str(x.id), "name": x.name, "path": T._folder_path(f.id) + "/" + x.name,
-                  "files": 1, "size": x.file_size or 0,
-                  "meta": ("ADAPT · read-only · " if x.is_adapt_reference() else "ADMA file · ") + T._human_size(x.file_size or 0)}
+                  "files": 1, "size": x.file_size or 0, "meta": "ADMA file · " + T._human_size(x.file_size or 0)}
                  for x in files[:300]]
     parent = getattr(f, "parent_id", None)
     return {"folder": {"id": str(f.id), "path": T._folder_path(f.id), "parent_id": str(parent) if parent else ""},
-            "folders": [folder_entry(x) for x in sorted(subs, key=lambda x: x.name.lower())],
+            "folders": [db_folder(x) for x in sorted(subs, key=lambda x: x.name.lower())],
             "files": out_files, "more_files": max(0, len(files) - 300)}
 
 
@@ -548,9 +595,10 @@ def _item_view(i, script=False):
     """How an input (or the script) is shown on the Run card: full location, source, size."""
     source = "ADAPT · read-only" if i.get("adapt_path") else ("Your script" if script else "ADMA file")
     count = f"{i.get('files', 0):,} files · " if i.get("kind") == "folder" else ""
+    size = "size not known yet" if i.get("size_unknown") else T._human_size(i.get("size", 0) or 0)
     return {"id": i.get("id"), "path": i["path"] + ("/" if i.get("kind") == "folder" else ""),
             "name": i["name"], "kind": i.get("kind", "file"), "size": i.get("size", 0) or 0,
-            "files": i.get("files", 1), "meta": f"{source} · {count}{T._human_size(i.get('size', 0) or 0)}",
+            "files": i.get("files", 1), "meta": f"{source} · {'' if i.get('size_unknown') else count}{size}",
             "removable": not script}
 
 
@@ -579,19 +627,17 @@ def tool_run_script(script, inputs=None, folder="", arguments=None, timeout_minu
         if copy_bytes > MAX_INPUT_COPY_BYTES:
             raise T._UserError("The ADMA-stored inputs add up to more than 2 GB, which is too much to copy for a run.")
         if team:
-            team_folder = _team_from_text(team)
+            team_name = _team_from_text(team)
         else:
-            team_folder = next((t for t in (team_of(i["folder_id"]) for i in items) if t), None) or team_of(sfi.folder_id)
-        if not team_folder:
-            raise T._UserError("I could not tell which team's ADMA Studio the results belong to. Pass team, "
-                               "one of: " + ", ".join(_teams()) + ".")
+            team_name = next((t for t in (team_of_item(i) for i in items) if t != NO_TEAM), None) \
+                or team_of_file(sfi)
         try:
             minutes = max(1, min(int(float(timeout_minutes or DEFAULT_TIMEOUT_MIN)), MAX_TIMEOUT_MIN))
         except (TypeError, ValueError):
             minutes = DEFAULT_TIMEOUT_MIN
     except T._UserError as e:
         return T._err(str(e))
-    reports = person_folder(team_folder, user, REPORTS)
+    reports = person_folder(team_name, user, REPORTS)
     topic = _pick_topic(reports, user, topic,
                         f"Python script {sfi.name} run on: {', '.join(i['name'] for i in items) or 'no input files'}",
                         items[0]["name"] if items else sfi.name)
@@ -602,9 +648,9 @@ def tool_run_script(script, inputs=None, folder="", arguments=None, timeout_minu
     from . import askadma_swan as W
     rec = {"run_id": run_id, "user_id": user.id, "username": user.username, "status": "awaiting_confirmation",
            "created": time.time(), "script_id": str(sfi.id), "script": sfi.name, "script_size": sfi.file_size or 0,
-           "script_path": T._folder_path(sfi.folder_id) + "/" + sfi.name, "inputs": items,
+           "script_path": T._location(sfi) + "/" + sfi.name, "inputs": items,
            "arguments_raw": arguments if isinstance(arguments, list) else (T._as_list(arguments) if arguments else None),
-           "timeout_minutes": minutes, "team_id": str(team_folder.id), "team": team_folder.name,
+           "timeout_minutes": minutes, "team": team_name,
            "topic": topic, "output_preview": out_preview, "where": where,
            "swan": W.clean_options(gpu, hours, setup)}
     _set_argv(rec)
@@ -824,14 +870,22 @@ def _safe_open(path):
     return os.fdopen(fd, "rb")
 
 
+def rec_team(rec):
+    """The Studio team folder name a run's results go to (older records named it by a folder id)."""
+    if rec.get("team"):
+        return rec["team"]
+    old = Folder.objects.filter(id=rec.get("team_id")).first() if rec.get("team_id") else None
+    return old.name if old else NO_TEAM
+
+
 def _finish(rec):
     from django.contrib.auth import get_user_model
     run_id, job = rec["run_id"], _job_dir(rec["run_id"])
     user = get_user_model().objects.filter(id=rec["user_id"]).first()
-    team = Folder.objects.filter(id=rec["team_id"]).first()
+    team = rec_team(rec)
     runner = rec.get("runner") or _read_status(job)
-    if not user or not team:
-        _update(run_id, status="failed", finished=time.time(), error="The user or team folder no longer exists.")
+    if not user:
+        _update(run_id, status="failed", finished=time.time(), error="The user no longer exists.")
         shutil.rmtree(job, ignore_errors=True)
         return
     if rec.get("topic"):
@@ -1074,10 +1128,7 @@ def _md(title, lines, notes):
 
 def _team_for_file(file_ref):
     fi, _ = T._find_file(file_ref)
-    team = team_of(fi.folder_id)
-    if not team:
-        raise T._UserError(f"{fi.name} is not inside one of the ADAPT team folders, so it has no ADMA Studio yet.")
-    return fi, team
+    return fi, team_of_file(fi)
 
 
 def _report_scan(source, title, notes):
@@ -1085,7 +1136,8 @@ def _report_scan(source, title, notes):
     if not state:
         raise T._UserError("That scan was not found.")
     hits = T._filter_hits(state, source.get("object", ""), source.get("taken_after", ""), source.get("taken_before", ""))
-    team = _team_from_text(state["folder"])
+    rel = AX.parse(state["folder"])
+    team = AX.team_of(rel) if rel else NO_TEAM
     objects = sorted({k for h in hits for k in h["counts"]})
     rows = []
     for h in hits:
@@ -1271,16 +1323,17 @@ def tool_open_studio(team="", for_file=""):
         user = current_user()
         if for_file:
             _, t = _team_for_file(for_file)
+            folder = person_folder(t, user)
         elif team:
             t = _team_from_text(team)
+            folder = person_folder(t, user)
         else:
-            raise T._UserError("Which team's ADMA Studio? One of: " + ", ".join(_teams()) + ".")
-        folder = person_folder(t, user)
+            folder = user_studio(user)
     except T._UserError as e:
         return T._err(str(e))
     return json.dumps({"ui_action": {"type": "navigate", "url": f"/folder/{folder.id}/"},
-                       "message": f"Opening your ADMA Studio folder in {t.name}: {T._folder_path(folder.id)}. "
-                                  "You can upload, edit and delete files there."})
+                       "message": f"Opening your ADMA Studio folder: {T._folder_path(folder.id)}. It is private to "
+                                  "you; you can upload, edit and delete files there."})
 
 
 # -------------------------------------------------- capitalized folder names --
@@ -1486,8 +1539,8 @@ TOOL_DEFS = [
     ("run_script", "Propose running one of the user's Python scripts (.py stored in ADMA) on data in ADMA. This "
                    "does NOT run it: it shows the user a card with the details and a Run button, and the script runs "
                    "only if they click it. It runs in a sandbox with no internet, can read the inputs, and its "
-                   "working folder becomes the result, saved to ADMA Studio/<user>/Reports/<Topic>/<date>_<script>/ "
-                   "(images in Figures/, other files in Results/) in the team folder of the data. By default the input paths are passed as the script's command-line arguments; or give "
+                   "working folder becomes the result, saved to the user's own ADMA Studio/<team>/Reports/<Topic>/<date>_<script>/ "
+                   "(images in Figures/, other files in Results/), where <team> is the ADAPT team folder of the data. By default the input paths are passed as the script's command-line arguments; or give "
                    "arguments using {input}, {inputs} and {output} placeholders, e.g. [\"--data\", \"{input}\", "
                    "\"--out\", \"{output}\"]. Inputs can be files or folders. where='swan' runs it on a GPU on "
                    "HCC's Swan cluster under the user's own HCC account instead (ADMA copies the inputs there and "
@@ -1497,8 +1550,8 @@ TOOL_DEFS = [
       "folder": {"type": "string", "description": "Optional folder to look in for the script and inputs"},
       "arguments": {"type": "array", "items": _S},
       "timeout_minutes": {"type": "integer", "description": "Default 30, at most 120"},
-      "team": {"type": "string", "description": "Optional: whose ADMA Studio gets the results, if the data "
-                                                "is not inside an ADAPT team folder"},
+      "team": {"type": "string", "description": "Optional: which Studio team folder gets the results (an ADAPT "
+                                                "team folder name, or 'My data'); by default the team of the data"},
       "topic": _TOPIC,
       "where": {"type": "string", "enum": ["adma", "swan"], "description": "adma (default): ADMA's sandbox, CPU "
                 "only. swan: a GPU on HCC Swan"},
@@ -1512,8 +1565,8 @@ TOOL_DEFS = [
                           "running (with the last lines of output), done or failed, and where the results were saved. "
                           "cancel=true stops it.",
      {"run_id": _S, "cancel": {"type": "boolean"}}, []),
-    ("save_report", "Save a result you produced into the user's ADMA Studio, in Reports/<Topic>/<date>_<title>/ "
-                    "(in the team folder of the data), with the numbers recomputed exactly on the server. kind: 'scan' (source = the "
+    ("save_report", "Save a result you produced into the user's own ADMA Studio, in <team>/Reports/<Topic>/<date>_<title>/ "
+                    "(<team> is the ADAPT team folder of the data, or 'My data'), with the numbers recomputed exactly on the server. kind: 'scan' (source = the "
                     "scan_status arguments: scan_id, object, taken_after, taken_before; saves a CSV + summary), "
                     "'analysis' (source = the exact analyze_data arguments; CSV + summary), 'chart' (source = the "
                     "exact plot_data arguments; PNG + CSV), 'detection' (source = the detect_objects arguments; photo "
@@ -1527,7 +1580,7 @@ TOOL_DEFS = [
     ("list_runs", "Show the user's script runs (ADMA and Swan), newest first, with their status and results "
                   "folders, as a list with buttons. Use for 'show my runs', 'is my Swan job done', 'where are my "
                   "results'.", {"limit": {"type": "integer", "description": "How many, default 10"}}, []),
-    ("open_studio", "Open the user's own ADMA Studio folder in a team folder (created if needed), where they can "
-                    "upload, edit and delete their files. Give the team name, or for_file to use the team of a file.",
+    ("open_studio", "Open the user's own private ADMA Studio folder (created if needed), where they can upload, "
+                    "edit and delete their files. Optionally give a team name, or for_file, to open that team's folder in it.",
      {"team": _S, "for_file": _S}, []),
 ]

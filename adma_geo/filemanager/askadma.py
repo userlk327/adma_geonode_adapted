@@ -26,7 +26,10 @@ SYSTEM_PROMPT = (
     "Keep answers short: usually one to four sentences or a short list. Use a table only when comparing "
     "several items, and no headers or emojis. Report tool results honestly, including low confidence or "
     "nothing found. Offer at most one follow-up. You only act when the user sends a message, so never "
-    "promise to do something later on your own. ADAPT data is read-only. "
+    "promise to do something later on your own. ADAPT data is read-only. You see only what the user may "
+    "see: their own and public ADMA files, and the ADAPT folders an administrator has given them access to; "
+    "if something is not found, say it may be outside their access. Name ADAPT folders and files by their "
+    "path on the share, starting with ADAPT/, for example ADAPT/Grazing/2025/Test101. "
     "Outside services are on the Connectors page (/connectors/): HCC Swan for GPU jobs and Globus for copying "
     "data between storage systems (such as HCC Attic) work once the user connects them; OneDrive is not set up "
     "yet, so say so if asked."
@@ -36,12 +39,19 @@ SYSTEM_PROMPT = (
 # ---------- Tool functions (unchanged logic) ----------
 
 def tool_list_folders():
-    folders = Folder.objects.filter(parent=None).order_by("name")
-    return json.dumps([
-        {"name": f.name, "is_third_party": f.is_third_party,
-         "subfolders": f.subfolders.count(), "files": f.files.count()}
-        for f in folders
-    ])
+    """The top-level folders the person may see: their ADMA folders, and ADAPT with the team folders they may open."""
+    from . import askadma_access as AX, askadma_tools as T
+    fc = T._folders()
+    visible = T._visible_paths()
+    out = [{"name": fc["names"][fid], "subfolders": len([c for c in fc["children"].get(fid, []) if c in visible]),
+            "files": T._live_files().filter(folder_id=fid).count()}
+           for fid in sorted((f for f in visible if fc["parents"].get(f) is None), key=lambda f: fc["names"][f].lower())]
+    if AX.share_ready():
+        teams = AX.teams()
+        out.append({"name": AX.ADAPT, "read_only": True, "team_folders": teams,
+                    "note": "The ADAPT share. Name its folders ADAPT/<team>/<folder>." if teams else
+                            "You have no access to ADAPT folders yet; an administrator grants it."})
+    return json.dumps(out)
 
 
 def tool_list_folder_contents(folder_name):
@@ -56,21 +66,30 @@ def tool_list_folder_contents(folder_name):
     })
 
 
+def _find(file_name):
+    """(file, note) for a file the person may see, or raises T._UserError."""
+    from . import askadma_tools as T
+    return T._find_file(file_name)
+
+
 def tool_read_file_info(file_name):
-    files = File.objects.filter(name__iexact=file_name)[:5]
-    if not files:
-        return json.dumps({"error": f"No file named '{file_name}' found."})
-    return json.dumps([
-        {"name": fi.name, "type": fi.file_type, "size": fi.file_size,
-         "location": fi.folder.get_full_path() if fi.folder else "(root)"}
-        for fi in files
-    ])
+    from . import askadma_tools as T
+    try:
+        fi, note = _find(file_name)
+    except T._UserError as e:
+        return json.dumps({"error": str(e)})
+    out = {"name": fi.name, "type": fi.file_type, "size": fi.file_size, "location": T._location(fi), "id": str(fi.id)}
+    if note:
+        out["duplicates_note"] = note
+    return json.dumps(out)
 
 
 def tool_read_file_data(file_name, max_rows=50):
-    fi = File.objects.filter(name__iexact=file_name).first()
-    if not fi:
-        return json.dumps({"error": f"No file named '{file_name}' found."})
+    from . import askadma_tools as T
+    try:
+        fi, _ = _find(file_name)
+    except T._UserError as e:
+        return json.dumps({"error": str(e)})
     if fi.file_type not in ("csv", "spreadsheet"):
         return json.dumps({"error": f"File '{file_name}' is type '{fi.file_type}', not CSV/spreadsheet."})
     try:
@@ -123,11 +142,13 @@ def tool_open_folder(folder_name):
 
 
 def tool_summarize_file(file_name):
-    fi = File.objects.filter(name__iexact=file_name).first()
-    if not fi:
-        return json.dumps({"error": "No file named that found."})
+    from . import askadma_tools as T
+    try:
+        fi, _ = _find(file_name)
+    except T._UserError as e:
+        return json.dumps({"error": str(e)})
     if fi.file_type in ("csv", "spreadsheet"):
-        return tool_read_file_data(file_name, max_rows=30)
+        return tool_read_file_data(str(fi.id), max_rows=30)
     if fi.file_type == "text":
         try:
             with fi.open_content("r") as fh:
@@ -140,18 +161,29 @@ def tool_summarize_file(file_name):
 
 def tool_get_context(current_url=""):
     import re
+    from urllib.parse import unquote, urlparse
+    from . import askadma_access as AX, askadma_tools as T
     if not current_url:
         return json.dumps({"note": "No current page context."})
-    m = re.search(r"/folder/([0-9a-f-]+)/", current_url)
+    path = unquote(urlparse(current_url).path or current_url)
+    m = re.search(r"/folder/([0-9a-f-]+)/", path)
     if m:
         folder = Folder.objects.filter(id=m.group(1)).first()
-        if folder:
-            return json.dumps({"viewing": "folder", "name": folder.name, "path": folder.get_full_path()})
-    m = re.search(r"/file/([0-9a-f-]+)/", current_url)
+        if folder and AX.can_read_row(folder):
+            return json.dumps({"viewing": "folder", "name": folder.name, "path": T._folder_path(folder.id)})
+    m = re.search(r"/file/([0-9a-f-]+)/", path)
     if m:
         fi = File.objects.filter(id=m.group(1)).first()
-        if fi:
-            return json.dumps({"viewing": "file", "name": fi.name, "type": fi.file_type})
+        if fi and AX.can_read_row(fi):
+            return json.dumps({"viewing": "file", "name": fi.name, "type": fi.file_type, "location": T._location(fi)})
+    m = re.search(r"/adapt/browse/(.+?)/?$", path)
+    if m or re.search(r"/adapt/?$", path):
+        rel = m.group(1) if m else ""
+        if not rel or AX.can_see_folder(rel):
+            return json.dumps({"viewing": "folder", "name": rel.rsplit("/", 1)[-1] or "ADAPT", "path": AX.label(rel)})
+    m = re.search(r"/adapt/open/(.+)$", path)
+    if m and AX.can_see_file(m.group(1)):
+        return json.dumps({"viewing": "file", "name": m.group(1).rsplit("/", 1)[-1], "path": AX.label(m.group(1))})
     return json.dumps({"viewing": "page", "url": current_url})
 
 
@@ -554,8 +586,9 @@ THUMB_DIR = "/tmp/adma_thumbs"
 def askadma_thumb_view(request, file_id):
     """A JPEG preview of an image file, at most `w` pixels wide/tall, for the chat panel."""
     from PIL import Image, ImageOps
+    from . import askadma_access as AX
     fi = get_object_or_404(File, id=file_id)
-    if fi.owner_id != request.user.id and not fi.is_public:
+    if not AX.can_read_row(fi, request.user):     # ADMA's own rule: owner, public, or an ADAPT grant
         return HttpResponseForbidden("Not allowed.")
     if fi.file_type != "image":
         raise Http404("Not an image.")
@@ -565,9 +598,41 @@ def askadma_thumb_view(request, file_id):
         width = 320
     stamp = int(fi.updated_at.timestamp()) if fi.updated_at else 0
     path = os.path.join(THUMB_DIR, f"{fi.id}_{width}_{stamp}.jpg")
+    return _thumb_response(path, lambda: fi.open_content("rb"), width)
+
+
+def askadma_adapt_thumb_view(request):
+    """A JPEG preview of a photo on the ADAPT share, by its path, for the chat panel.
+    No record is made: showing a photo is not opening it. The person's ADAPT grants decide."""
+    import hashlib
+    from . import askadma_access as AX
+    rel = request.GET.get("path", "")
+    try:
+        rel = AX.normalize(rel)
+    except AX.AccessError:
+        raise Http404("No such photo.")
+    if not rel or not AX.share_ready() or not AX.can_see_file(rel, request.user):
+        return HttpResponseForbidden("Not allowed.")
+    if File.file_type_for(rel.rsplit("/", 1)[-1]) != "image":
+        raise Http404("Not an image.")
+    try:
+        disk = AX.disk_path(rel)
+        stamp = int(os.stat(disk).st_mtime)
+    except Exception:
+        raise Http404("No such photo.")
+    try:
+        width = max(64, min(int(request.GET.get("w", 320)), 2048))
+    except (TypeError, ValueError):
+        width = 320
+    name = hashlib.sha256(rel.casefold().encode("utf-8")).hexdigest()[:32]
+    return _thumb_response(os.path.join(THUMB_DIR, f"adapt_{name}_{width}_{stamp}.jpg"), lambda: open(disk, "rb"), width)
+
+
+def _thumb_response(path, opener, width):
+    from PIL import Image, ImageOps
     if not os.path.exists(path):
         try:
-            with fi.open_content("rb") as fh:
+            with opener() as fh:
                 img = Image.open(fh)
                 img = ImageOps.exif_transpose(img)
                 img.thumbnail((width, width))

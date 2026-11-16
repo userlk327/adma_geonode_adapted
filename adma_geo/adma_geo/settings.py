@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -32,6 +33,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.humanize',
     # 'django.contrib.gis',  # GeoDjango support (disabled for now)
 
     # Third party apps
@@ -51,6 +53,8 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'filemanager.middleware.LoginRequiredMiddleware',
+    'filemanager.middleware.PasswordChangeRequiredMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -152,6 +156,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'filemanager.tasks.sync_johndeere_task',
         'schedule': crontab(hour=3, minute=0),  # Run at 3:00 AM daily
     },
+    'index-adapt-nightly': {
+        'task': 'filemanager.tasks.index_adapt_task',
+        'schedule': crontab(hour=1, minute=0),  # Rebuild the ADAPT search and totals index at 1:00 AM
+    },
 }
 
 # Realm5 API Configuration
@@ -187,6 +195,44 @@ ALL_SPATIAL_EXTENSIONS = [
     '.gpkg', '.geojson', '.shp', '.kml', '.kmz',
     '.tiff', '.tif', '.geotiff', '.geotif', '.zip'
 ]
+
+# ADAPT warehouse share
+# The share is mounted over CIFS by docker-compose.adapt.yml. ADMA indexes it by
+# reference (see filemanager/adapt_storage.py) rather than copying its contents.
+ADAPT_MOUNT = os.environ.get('ADAPT_MOUNT', '/adapt')
+
+# Allow ADMA to write uploads back onto the share. Off unless explicitly enabled,
+# because it requires the mount and the service account to both be read-write.
+ADAPT_WRITE_ENABLED = os.environ.get('ADAPT_WRITE_ENABLED', 'False').lower() == 'true'
+
+# Optional narrowing of where write-back may land: comma-separated paths relative
+# to the mount, e.g. "Data Management,Shared/Incoming". Empty means the whole
+# share is writable, which is the current deployment choice.
+ADAPT_WRITABLE_PREFIXES = [
+    p.strip().strip('/').replace('\\', '/')
+    for p in os.environ.get('ADAPT_WRITABLE_PREFIXES', '').split(',')
+    if p.strip()
+]
+
+# The cache holds short-lived listings of ADAPT folders (adapt_share.list_folder),
+# so paging through a folder of thousands of files does not rescan it per page.
+# Redis database 1 shares them between workers and keeps them apart from
+# Celery's database 0. Without REDIS_URL, and always under "manage.py test",
+# each process keeps its own in memory.
+if os.environ.get('REDIS_URL') and sys.argv[1:2] != ['test']:
+    from urllib.parse import urlsplit, urlunsplit
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': urlunsplit(urlsplit(os.environ['REDIS_URL'])._replace(path='/1')),
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        }
+    }
 
 # Proxy Settings for HTTPS detection
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

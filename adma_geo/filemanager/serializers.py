@@ -46,6 +46,12 @@ class FileUploadSerializer(serializers.Serializer):
         allow_null=True,
         help_text="Optional folder ID to upload files into"
     )
+    adapt_path = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+        help_text="Optional folder on the ADAPT share to upload into, relative to the share (\"\" is the whole share). Takes the place of folder_id"
+    )
     is_public = serializers.BooleanField(
         default=False,
         help_text="Whether uploaded files should be public"
@@ -68,6 +74,12 @@ class FolderUploadSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         help_text="Optional parent folder ID"
+    )
+    adapt_path = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+        help_text="Optional folder on the ADAPT share to upload into, relative to the share (\"\" is the whole share). Takes the place of folder_id"
     )
     is_public = serializers.BooleanField(
         default=False,

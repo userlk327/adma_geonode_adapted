@@ -178,15 +178,19 @@ services:
       COMMUNITY_EXTENSIONS: ""
     volumes:
       - adma_geo_geoserver_data:/opt/geoserver/data_dir
+      # Versioned request limits; the image only writes its defaults when the file is missing
+      - ./geoserver/controlflow.properties:/opt/geoserver/data_dir/controlflow.properties:ro
       - adma_geo_media:/app/media
     ports:
       - "8080:8080"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/geoserver/web/wicket/resource/org.geoserver.web.GeoServerBasePage/geoserver-logo.png || exit 1"]
+      # Anonymous WMS GetCapabilities: healthy once GeoServer serves maps
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null 'http://localhost:8080/geoserver/ows?service=WMS&version=1.3.0&request=GetCapabilities' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
 volumes:
   adma_geo_db:

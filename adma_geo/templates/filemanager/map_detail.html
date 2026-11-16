@@ -245,10 +245,11 @@
         margin: 0 !important;
     }
     
+    /* Full screen control, under the zoom group (10px + its 64px + a 6px gap) */
     #map .ol-full-screen {
         position: absolute !important;
-        top: 10px !important;
-        right: 60px !important;
+        top: 80px !important;
+        right: 10px !important;
         left: auto !important;
         bottom: auto !important;
         background: rgba(255, 255, 255, 0.9) !important;
@@ -256,6 +257,27 @@
         box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
         border: 1px solid rgba(0,0,0,0.1) !important;
         margin: 0 !important;
+    }
+    
+    /* Zoom and full screen buttons the same size, as on the single-file map page */
+    #map .ol-zoom button,
+    #map .ol-full-screen button {
+        background: transparent !important;
+        border: none !important;
+        color: #333 !important;
+        font-size: 16px !important;
+        font-weight: bold !important;
+        width: 28px !important;
+        height: 28px !important;
+        margin: 2px !important;
+        border-radius: 4px !important;
+        transition: all 0.2s ease !important;
+    }
+    
+    #map .ol-zoom button:hover,
+    #map .ol-full-screen button:hover {
+        background: rgba(0,0,0,0.1) !important;
+        color: #000 !important;
     }
     
     .layer-handle {

@@ -8,7 +8,7 @@ cached_total_size and cached_total_file_count fields used by third-party
 
 Usage:
     python manage.py recompute_folder_sizes
-    python manage.py recompute_folder_sizes --source adapt   # only third-party 'adapt' tree
+    python manage.py recompute_folder_sizes --source johndeere   # only one third-party source
 """
 from django.core.management.base import BaseCommand
 from django.db.models import Sum, Count
@@ -20,7 +20,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--source', type=str, default=None,
-                            help="Limit to a third_party_source (e.g. 'adapt'). Default: all folders.")
+                            help="Limit to a third_party_source (e.g. 'johndeere'). Default: all folders.")
 
     def handle(self, *args, **options):
         source = options['source']

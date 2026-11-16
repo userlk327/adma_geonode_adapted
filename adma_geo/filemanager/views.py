@@ -1,20 +1,21 @@
 import json
-import magic
 import os
-from pathlib import Path
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.views import PasswordChangeView
 from django.contrib import messages
-from django.views.generic import CreateView, TemplateView
-from django.http import JsonResponse, HttpResponse, Http404, FileResponse
+from django.views.generic import TemplateView
+from django.http import JsonResponse, HttpResponse, HttpResponseNotFound, Http404, FileResponse
 from django.db.models import Q, Count, Sum
 from django.urls import reverse_lazy
-from django.conf import settings
+from django.contrib.staticfiles import finders
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-from .models import Folder, File, Map, Tool
-from .forms import RegistrationForm, FolderForm, FileUploadForm
-from .tasks import process_gis_file_task
+from .models import Folder, File, Map, Tool, UserProfile, must_change_password
+from .forms import NewPasswordChangeForm
+from .tasks import process_gis_file_task, queue_gis_processing
+from . import adapt_records, adapt_share, adapt_storage, adapt_views, gis_read, gis_utils, permissions
 
 def get_robust_user_statistics(user):
     """
@@ -88,6 +89,99 @@ def get_robust_user_statistics(user):
         }
     
     return stats
+
+READ_ONLY_MESSAGE = 'You have read-only access to this ADAPT folder.'
+
+
+class UploadRefused(Exception):
+    """An upload or a new folder may not land where it was sent. Carries the HTTP status to answer with."""
+
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
+def upload_target(user, folder_id=None, adapt_path=None):
+    """Where an upload or a new folder lands: (folder, None) in ADMA's own storage, or (None, path) on the ADAPT share.
+
+    `adapt_path` names a folder on the share, "" for the whole of it. A
+    `folder_id` naming an ADAPT Folder row stands for that row's path, so older
+    clients keep working. With neither, (None, None) is the top of the user's
+    own files.
+
+    A user's own folders take writes from their owner only, as before. A folder
+    on the share takes them from a user with a write grant on it (superusers
+    included, see permissions.can_write_path), and only while
+    ADAPT_WRITE_ENABLED is on; the bytes then go onto the share through
+    adapt_storage, never into MEDIA_ROOT. A folder the user cannot see is
+    reported missing, as everywhere else; one they can see but not write to is
+    refused with the reason.
+    """
+    if adapt_path is None and folder_id:
+        try:
+            folder = Folder.objects.filter(id=folder_id).first()
+        except (ValueError, ValidationError):
+            folder = None
+        if folder is None or not permissions.can_read(user, folder):
+            raise UploadRefused('Folder not found', 404)
+        if not adapt_storage.is_adapt_folder(folder):
+            if folder.owner_id != user.id:
+                raise UploadRefused('Folder not found', 404)
+            return folder, None
+        adapt_path = permissions.adapt_path(folder)
+    if adapt_path is None:
+        return None, None
+    try:
+        rel = adapt_share.normalize(adapt_path)
+    except adapt_share.AdaptPathError:
+        raise UploadRefused('Folder not found', 404)
+    if not permissions.can_read_path(user, rel) or not adapt_share.is_folder(rel):
+        raise UploadRefused('Folder not found', 404)
+    if not permissions.can_write_path(user, rel):
+        raise UploadRefused(READ_ONLY_MESSAGE, 403)
+    if not adapt_storage.write_enabled():
+        raise UploadRefused(adapt_storage.WRITE_DISABLED_MESSAGE, 403)
+    return None, rel
+
+
+def can_upload_into(user, folder):
+    """Whether upload_target would accept `folder` for this user. For showing or hiding upload controls."""
+    try:
+        upload_target(user, folder.pk)
+    except UploadRefused:
+        return False
+    return True
+
+
+def adapt_file_json(upload):
+    """How the upload views report a file written to the ADAPT share: the keys they report for any file, plus its path there.
+
+    `id` is None unless the file has a record (a GIS file, see adapt_storage.upload_file).
+    """
+    entry = upload.record
+    if entry is None:
+        entry = File(name=upload.name, file_size=upload.size)
+        entry.apply_extension_metadata(upload.name)
+    return {
+        'id': str(entry.id) if upload.record else None,
+        'name': upload.name,
+        'size': entry.get_size_display(),
+        'url': adapt_share.file_url(upload.path),
+        'path': upload.path,
+        'is_spatial': entry.is_spatial,
+        'file_type': entry.file_type,
+    }
+
+
+def adapt_folder_json(rel):
+    """How the upload views report a folder made on the ADAPT share. ADMA keeps no row for it, so `id` is None."""
+    return {
+        'id': None,
+        'name': adapt_share.name(rel),
+        'url': adapt_share.folder_url(rel),
+        'path': rel,
+    }
+
 
 def generate_unique_name(name, owner, folder=None, is_folder=False):
     """
@@ -367,13 +461,23 @@ def dashboard(request):
     # Get third-party data visible to the current user:
     # - User's own third-party folders/files
     # - Public third-party folders/files from other users
+    # - ADAPT as one entry, only through a FolderGrant (see permissions), never by owner or is_public
     third_party_folders = Folder.objects.filter(
         is_third_party=True,
         deletion_in_progress=False,
         parent=None  # Only top-level third-party folders
     ).filter(
         Q(owner=user) | Q(is_public=True)  # User's own OR public
-    ).distinct().order_by('third_party_source', 'name')
+    ).exclude(third_party_source='adapt').order_by('third_party_source', 'name')
+    adapt_entry = None
+    if permissions.can_read_path(user, ''):
+        # The share is listed live at /adapt/; counts come from the search index once it has run.
+        # Before the first run there are none to show, rather than "Empty", as on the folder page.
+        index = adapt_views.index_module()
+        summary = ''
+        if index is not None and index.indexed_at() is not None:
+            summary = Folder.describe_contents(*index.visible_totals(user, ''))
+        adapt_entry = {'url': adapt_share.folder_url(''), 'summary': summary}
     
     third_party_files = File.objects.filter(
         is_third_party=True,
@@ -382,6 +486,10 @@ def dashboard(request):
     ).filter(
         Q(owner=user) | Q(is_public=True)  # User's own OR public
     ).distinct().order_by('third_party_source', '-created_at')
+    # Delete is offered only where delete_item would allow it: others' public rows and ADAPT rows get none.
+    deletable_ids = {
+        item.id for item in chain(third_party_folders, third_party_files) if permissions.can_delete(user, item)
+    }
     
     return render(request, 'filemanager/dashboard.html', {
         'folders': folders,
@@ -396,7 +504,9 @@ def dashboard(request):
         # Third-party data panel
         'third_party_folders': third_party_folders,
         'third_party_files': third_party_files,
-        'total_third_party_folders': third_party_folders.count(),
+        'deletable_ids': deletable_ids,
+        'adapt_entry': adapt_entry,
+        'total_third_party_folders': third_party_folders.count() + (1 if adapt_entry else 0),
         'total_third_party_files': third_party_files.count(),
     })
 
@@ -406,13 +516,24 @@ def folder_detail(request, folder_id):
     folder = get_object_or_404(Folder, id=folder_id)
     
     # Check permissions
-    if folder.owner != request.user and not folder.is_public:
+    if not permissions.can_read(request.user, folder):
         messages.error(request, "You don't have permission to view this folder.")
         return redirect('filemanager:dashboard')
+    if adapt_storage.is_adapt_folder(folder):
+        # The share is listed live by path; an old link to a folder row goes there.
+        return redirect(adapt_share.folder_url(permissions.adapt_path(folder)))
     
     # Get subfolders and files with pagination (exclude items being deleted)
     subfolders_queryset = folder.subfolders.filter(deletion_in_progress=False).order_by('name')
     files_queryset = folder.files.filter(deletion_in_progress=False).order_by('-created_at')
+    if folder.is_third_party and folder.third_party_source == 'adapt':
+        # Inside the ADAPT tree only granted branches are listed, and files only
+        # when the folder itself is covered by a grant, not merely on the way to one.
+        subfolders_queryset = Folder.objects.filter(
+            pk__in=[f.pk for f in permissions.filter_readable(request.user, subfolders_queryset)]
+        ).order_by('name')
+        if not permissions.can_list_files(request.user, folder):
+            files_queryset = files_queryset.none()
     
     # Combine subfolders and files for pagination
     page = request.GET.get('page', 1)
@@ -616,6 +737,8 @@ def folder_detail(request, folder_id):
         'files': files,
         'breadcrumbs': folder.get_breadcrumbs(),
         'can_edit': folder.owner == request.user,
+        'can_upload': can_upload_into(request.user, folder),
+        'is_adapt': adapt_storage.is_adapt_folder(folder),
         'is_public_view': False,
         'page_obj': page_obj,
         'total_items': total_items,
@@ -636,7 +759,7 @@ def folder_detail(request, folder_id):
 
 def public_folder_detail(request, folder_id):
     """Public view of folder contents"""
-    folder = get_object_or_404(Folder, id=folder_id, is_public=True)
+    folder = get_object_or_404(Folder.objects.exclude(third_party_source='adapt'), id=folder_id, is_public=True)
     
     # If user is authenticated and owns this folder, redirect to dashboard
     if request.user.is_authenticated and folder.owner == request.user:
@@ -870,22 +993,41 @@ def public_folder_detail(request, folder_id):
         'realm5_all_variables': json.dumps(realm5_all_variables) if realm5_all_variables else None,
     })
 
+def adapt_crumbs_of(file_obj):
+    """[(name, url)] of the ADAPT folders an ADAPT record sits in, from ADAPT down; None for any other File."""
+    adapt_rel = adapt_records.path_of(file_obj)
+    if adapt_rel is None:
+        return None
+    return [('ADAPT', adapt_share.folder_url(''))] + [
+        (name, adapt_share.folder_url(path))
+        for name, path in adapt_share.breadcrumbs(adapt_share.parent(adapt_rel))
+    ]
+
+
 @login_required
 def file_detail(request, file_id):
     """View file details and preview"""
     file_obj = get_object_or_404(File, id=file_id)
     
     # Check permissions
-    if file_obj.owner != request.user and not file_obj.is_public:
+    if not permissions.can_read(request.user, file_obj):
         messages.error(request, "You don't have permission to view this file.")
         return redirect('filemanager:dashboard')
-    
+
+    # An ADAPT record sits on the share by its path rather than in a Folder, and
+    # outlives its file there: a file gone from the share has nothing to preview.
+    is_adapt_record = file_obj.is_third_party and file_obj.third_party_source == 'adapt'
+    adapt_gone = adapt_records.is_gone(file_obj)
+    adapt_crumbs = adapt_crumbs_of(file_obj)
+    adapt_folder_name, adapt_folder_url = adapt_crumbs[-1] if adapt_crumbs else (None, None)
+    preview_type = None if adapt_gone else file_obj.file_type
+
     # For text files, read content for preview
     file_content = None
     csv_data = None
     csv_headers = None
     
-    if file_obj.file_type == 'text' and file_obj.file_size < 1024 * 1024:  # Max 1MB for preview
+    if preview_type == 'text' and file_obj.file_size < 1024 * 1024:  # Max 1MB for preview
         try:
             with file_obj.open_content('r') as f:
                 file_content = f.read()
@@ -893,7 +1035,7 @@ def file_detail(request, file_id):
             file_content = None
     
     # For CSV files, parse data for table view and visualization
-    elif file_obj.file_type == 'csv' and file_obj.file_size < 5 * 1024 * 1024:  # Max 5MB for CSV
+    elif preview_type == 'csv' and file_obj.file_size < 5 * 1024 * 1024:  # Max 5MB for CSV
         import csv
         try:
             with file_obj.open_content('r') as f:
@@ -913,7 +1055,7 @@ def file_detail(request, file_id):
             csv_headers = None
     
     # For spreadsheet files (Excel), parse data for table view and visualization
-    elif file_obj.file_type == 'spreadsheet' and file_obj.file_size < 10 * 1024 * 1024:  # Max 10MB for Excel
+    elif preview_type == 'spreadsheet' and file_obj.file_size < 10 * 1024 * 1024:  # Max 10MB for Excel
         try:
             import pandas as pd
             # Read Excel file using pandas
@@ -1006,18 +1148,25 @@ def file_detail(request, file_id):
         'file_content': file_content,
         'csv_data': json.dumps(csv_data) if csv_data else None,
         'csv_headers': json.dumps(csv_headers) if csv_headers else None,
-        'can_edit': file_obj.owner == request.user,
+        # A record on the ADAPT share is never shared, renamed or deleted from ADMA.
+        'can_edit': file_obj.owner == request.user and not is_adapt_record,
+        'can_delete': permissions.can_delete(request.user, file_obj),
         'is_realm5_observation': is_realm5_observation,
         'realm5_observation_data': json.dumps(realm5_observation_data) if realm5_observation_data else None,
         'realm5_variables': json.dumps(realm5_variables) if realm5_variables else None,
         'is_realm5_all': is_realm5_all,
         'realm5_all_data': json.dumps(realm5_all_data) if realm5_all_data else None,
         'realm5_all_variables': json.dumps(realm5_all_variables) if realm5_all_variables else None,
+        'adapt_crumbs': adapt_crumbs,
+        'adapt_folder_name': adapt_folder_name,
+        'adapt_folder_url': adapt_folder_url,
+        'adapt_gone': adapt_gone,
+        **map_state(file_obj),
     })
 
 def public_file_detail(request, file_id):
     """Public view of file details"""
-    file_obj = get_object_or_404(File, id=file_id, is_public=True)
+    file_obj = get_object_or_404(File.objects.exclude(third_party_source='adapt'), id=file_id, is_public=True)
     
     # If user is authenticated and owns this file, redirect to dashboard
     if request.user.is_authenticated and file_obj.owner == request.user:
@@ -1159,6 +1308,7 @@ def public_file_detail(request, file_id):
         'is_realm5_all': is_realm5_all,
         'realm5_all_data': json.dumps(realm5_all_data) if realm5_all_data else None,
         'realm5_all_variables': json.dumps(realm5_all_variables) if realm5_all_variables else None,
+        **map_state(file_obj),
     })
 
 @login_required
@@ -1174,11 +1324,16 @@ def create_folder(request):
             if not folder_name:
                 return JsonResponse({'error': 'Folder name is required'}, status=400)
             
-            # Get parent folder if specified
-            parent_folder = None
-            if parent_id:
-                parent_folder = get_object_or_404(Folder, id=parent_id, owner=request.user)
+            try:
+                parent_folder, adapt_parent = upload_target(request.user, parent_id, data.get('adapt_path'))
+            except UploadRefused as refused:
+                return JsonResponse({'error': str(refused)}, status=refused.status)
             
+            if adapt_parent is not None:
+                # Made on the share only: ADMA keeps no row for a folder there.
+                rel = adapt_storage.make_folder(adapt_parent, folder_name)
+                return JsonResponse({'success': True, 'folder': adapt_folder_json(rel)})
+
             # Generate unique folder name if duplicate exists
             unique_folder_name = generate_unique_name(
                 folder_name,
@@ -1186,7 +1341,7 @@ def create_folder(request):
                 folder=parent_folder,
                 is_folder=True
             )
-            
+
             # Create folder with unique name
             folder = Folder.objects.create(
                 name=unique_folder_name,
@@ -1208,6 +1363,8 @@ def create_folder(request):
             
         except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON data'}, status=400)
+        except adapt_storage.AdaptWriteError as e:
+            return JsonResponse({'error': str(e)}, status=400)
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
     
@@ -1225,13 +1382,24 @@ def upload_files(request):
             if not files:
                 return JsonResponse({'error': 'No files selected'}, status=400)
             
-            # Get folder if specified
-            folder = None
-            if folder_id:
-                folder = get_object_or_404(Folder, id=folder_id, owner=request.user)
+            try:
+                folder, adapt_folder = upload_target(request.user, folder_id, request.POST.get('adapt_path'))
+            except UploadRefused as refused:
+                return JsonResponse({'error': str(refused)}, status=refused.status)
             
             uploaded_files = []
             for uploaded_file in files:
+                if adapt_folder is not None:
+                    # Names are deduplicated on the share itself, where they are
+                    # reserved. A GIS file gets its record and its processing there.
+                    try:
+                        upload = adapt_storage.upload_file(adapt_folder, uploaded_file, owner=request.user)
+                    except adapt_storage.AdaptWriteError as e:
+                        # Files before this one are on the share already; say which.
+                        return JsonResponse({'error': str(e), 'files': uploaded_files}, status=400)
+                    uploaded_files.append(adapt_file_json(upload))
+                    continue
+
                 # Generate unique filename if duplicate exists
                 unique_filename = generate_unique_name(
                     uploaded_file.name,
@@ -1239,7 +1407,7 @@ def upload_files(request):
                     folder=folder,
                     is_folder=False
                 )
-                
+
                 # Create file object with unique name
                 file_obj = File.objects.create(
                     name=unique_filename,
@@ -1281,8 +1449,10 @@ def download_file(request, file_id):
     file_obj = get_object_or_404(File, id=file_id)
     
     # Check permissions
-    if file_obj.owner != request.user and not file_obj.is_public:
+    if not permissions.can_read(request.user, file_obj):
         raise Http404("File not found")
+    if adapt_records.is_gone(file_obj):
+        return HttpResponseNotFound(adapt_records.GONE_MESSAGE, content_type='text/plain; charset=utf-8')
     
     # Referenced files have no media URL, so previews come back through this view
     # asking for inline disposition instead of a download.
@@ -1308,7 +1478,11 @@ def delete_file_complete(file_obj):
     3. Remove ChromaDB embeddings
     4. Remove physical file from disk
     5. Remove from PostgreSQL database
+
+    Raises PermissionDenied for an ADAPT record, which nobody deletes from ADMA.
     """
+    if permissions.touches_adapt([file_obj]):
+        raise PermissionDenied(f'{file_obj.name}: {permissions.ADAPT_DELETE_MESSAGE}')
     try:
         # 1. Remove from GeoServer if it's a spatial file
         if file_obj.is_spatial and file_obj.geoserver_layer_name:
@@ -1362,7 +1536,7 @@ def delete_file_complete(file_obj):
         # 6. Update affected maps' Layer Groups in GeoServer
         for map_obj in affected_maps:
             try:
-                from .geoserver_manager import LayerGroupManager
+                from .geoserver_layer_group_manager import LayerGroupManager
                 layer_group_manager = LayerGroupManager()
                 layer_group_manager.update_layer_group(map_obj)
                 print(f"Updated Layer Group for map {map_obj.name}")
@@ -1381,7 +1555,17 @@ def delete_folder_complete(folder_obj):
     2. Recursively delete all subfolders
     3. Remove ChromaDB embeddings for the folder
     4. Remove from PostgreSQL database
+
+    Raises PermissionDenied, before deleting anything, for an ADAPT folder and
+    for a folder with ADAPT rows anywhere beneath it.
     """
+    if permissions.touches_adapt([folder_obj]):
+        raise PermissionDenied(f'{folder_obj.name}: {permissions.ADAPT_DELETE_MESSAGE}')
+    _delete_folder_tree(folder_obj)
+
+
+def _delete_folder_tree(folder_obj):
+    """delete_folder_complete without the ADAPT check, which it makes once for the whole tree."""
     try:
         print(f"Starting complete deletion of folder: {folder_obj.name}")
         
@@ -1393,7 +1577,7 @@ def delete_folder_complete(folder_obj):
         # 2. Recursively delete all subfolders
         for subfolder in folder_obj.subfolders.all():
             print(f"Deleting subfolder {subfolder.name} in folder {folder_obj.name}")
-            delete_folder_complete(subfolder)
+            _delete_folder_tree(subfolder)
         
         # 3. ChromaDB embeddings removal - DISABLED (no longer using ChromaDB)
         # NOTE: ChromaDB and embedding service removed in favor of PostgreSQL search
@@ -1408,6 +1592,31 @@ def delete_folder_complete(folder_obj):
         raise
 
 
+def _delete_refusal(user, item):
+    """A response refusing to delete `item` for `user`, or None if they may.
+
+    Only the owner deletes, and nobody deletes ADAPT content (see
+    permissions.can_delete), whatever their grant: a writer, the row's owner and
+    a superuser are all refused, and the row is left as it was. Anyone who may
+    not see the item gets the same 404 as for one that does not exist.
+    """
+    if not permissions.can_read(user, item):
+        return JsonResponse({'error': 'Not found'}, status=404)
+    if permissions.touches_adapt([item]):
+        return JsonResponse({'error': permissions.ADAPT_DELETE_MESSAGE}, status=403)
+    if item.owner_id != user.id:
+        return JsonResponse({'error': 'Not found'}, status=404)
+    return None
+
+
+def _find(model, item_id):
+    """The `model` row with this id, or None for a missing or malformed id: both are a 404 to the client."""
+    try:
+        return model.objects.filter(id=item_id).first()
+    except (ValueError, ValidationError):
+        return None
+
+
 @login_required
 def delete_item(request):
     """Delete file or folder via AJAX - async with immediate response"""
@@ -1418,8 +1627,13 @@ def delete_item(request):
             item_id = data.get('id')
             
             if item_type == 'file':
-                item = get_object_or_404(File, id=item_id, owner=request.user)
+                item = _find(File, item_id)
+                if item is None:
+                    return JsonResponse({'error': 'Not found'}, status=404)
                 item_name = item.name
+                refused = _delete_refusal(request.user, item)
+                if refused:
+                    return refused
                 
                 # Mark as deletion in progress to hide from queries
                 item.deletion_in_progress = True
@@ -1438,8 +1652,13 @@ def delete_item(request):
                 })
                 
             elif item_type == 'folder':
-                item = get_object_or_404(Folder, id=item_id, owner=request.user)
+                item = _find(Folder, item_id)
+                if item is None:
+                    return JsonResponse({'error': 'Not found'}, status=404)
                 item_name = item.name
+                refused = _delete_refusal(request.user, item)
+                if refused:
+                    return refused
                 
                 # Mark as deletion in progress to hide from queries
                 item.deletion_in_progress = True
@@ -1493,7 +1712,7 @@ def map_viewer(request, file_id):
     file_obj = get_object_or_404(File, id=file_id)
     
     # Check permissions
-    if file_obj.owner != request.user and not file_obj.is_public:
+    if not permissions.can_read(request.user, file_obj):
         messages.error(request, "You don't have permission to view this file.")
         return redirect('filemanager:dashboard')
     
@@ -1501,6 +1720,13 @@ def map_viewer(request, file_id):
     if not file_obj.is_spatial:
         messages.error(request, "This file is not a spatial/GIS file.")
         return redirect('filemanager:file_detail', file_id=file_id)
+    
+    # An ADAPT file is processed when someone asks for its map, not when it is
+    # opened: publishing every file opened on the share would upload large
+    # rasters nobody looks at. The page shows it being prepared meanwhile.
+    if (file_obj.gis_status == 'pending' and adapt_records.path_of(file_obj) is not None
+            and not adapt_records.is_gone(file_obj)):
+        queue_gis_processing(file_obj)
     
     # Get GeoServer layer info
     geoserver_info = None
@@ -1555,11 +1781,41 @@ def map_viewer(request, file_id):
     return render(request, 'filemanager/map_viewer.html', {
         'file': file_obj,
         'geoserver_info': geoserver_info,
+        'adapt_crumbs': adapt_crumbs_of(file_obj),
+        **map_state(file_obj),
     })
+
+
+def map_state(file_obj):
+    """What the file and map pages show of a spatial file's map: gis_problem and drone_photo.
+
+    A raw drone photo marked 'error' before ADMA told them apart becomes a
+    drone photo here (gis_utils.recognize_drone_photo).
+    """
+    if file_obj.is_spatial:
+        gis_utils.recognize_drone_photo(file_obj)
+    return {'gis_problem': gis_problem(file_obj), 'drone_photo': drone_photo_of(file_obj)}
+
+
+def gis_problem(file_obj):
+    """Why a spatial file in 'error' has no map: the last failure its processing log records. None otherwise."""
+    if file_obj.gis_status != 'error':
+        return None
+    for line in reversed((file_obj.processing_log or '').splitlines()):
+        if line.startswith('✗'):
+            return line.lstrip('✗ ').split(': ', 1)[-1]
+    return 'ADMA could not prepare this file for the map.'
+
+
+def drone_photo_of(file_obj):
+    """The gis_read.DronePhotoInfo of a raw drone photo: its camera and where the drone was. None otherwise."""
+    if file_obj.gis_status != 'drone_photo' or not file_obj.drone_photo:
+        return None
+    return gis_read.DronePhotoInfo.from_json(file_obj.drone_photo)
 
 def public_map_viewer(request, file_id):
     """Public view of GIS file on a map"""
-    file_obj = get_object_or_404(File, id=file_id, is_public=True, is_spatial=True)
+    file_obj = get_object_or_404(File.objects.exclude(third_party_source='adapt'), id=file_id, is_public=True, is_spatial=True)
     
     # If user is authenticated and owns this file, redirect to dashboard map view
     if request.user.is_authenticated and file_obj.owner == request.user:
@@ -1621,6 +1877,38 @@ def public_map_viewer(request, file_id):
         'geoserver_info': geoserver_info,
         'is_public_view': True,  # Flag to adjust breadcrumbs and navigation
         'public_breadcrumbs': file_obj.get_public_breadcrumbs(),  # Add public breadcrumbs
+        **map_state(file_obj),
+    })
+
+def adapt_upload_folders(request, adapt_parent, files, file_paths):
+    """The ADAPT side of upload_folders: write the tree into folder `adapt_parent` on the share.
+
+    As for ADMA's own folders, a top folder whose name is taken is made fresh
+    beside it with a suffix and reported as renamed. Nothing is recorded in
+    ADMA except GIS files (see adapt_storage.upload_file).
+    """
+    tree = adapt_storage.upload_tree(adapt_parent, zip(files, file_paths), request.user, fresh_top=True)
+    renamed_folders = [f"{asked} → {made}" for asked, made in tree.renamed]
+    uploaded_files = []
+    for upload in tree.files:
+        entry = adapt_file_json(upload)
+        entry['folder'] = adapt_share.name(adapt_share.parent(upload.path)) or None
+        uploaded_files.append(entry)
+
+    message = f'Successfully uploaded {len(tree.files)} files in {len(tree.folders)} folders'
+    if renamed_folders:
+        message += f'. Renamed duplicate folders: {", ".join(renamed_folders)}'
+    if tree.skipped:
+        message += f'. Left out {len(tree.skipped)} hidden files ADMA does not show'
+    return JsonResponse({
+        'success': True,
+        'folders_created': len(tree.folders),
+        'files_created': len(tree.files),
+        'renamed_folders': renamed_folders,
+        'folders': [adapt_folder_json(rel) for rel in tree.folders],
+        'files': uploaded_files,
+        'skipped': tree.skipped,
+        'message': message,
     })
 
 @login_required
@@ -1636,10 +1924,12 @@ def upload_folders(request):
             if not files or len(files) != len(file_paths):
                 return JsonResponse({'error': 'No files selected or paths mismatch'}, status=400)
             
-            # Get parent folder if specified
-            parent_folder = None
-            if folder_id:
-                parent_folder = get_object_or_404(Folder, id=folder_id, owner=request.user)
+            try:
+                parent_folder, adapt_parent = upload_target(request.user, folder_id, request.POST.get('adapt_path'))
+            except UploadRefused as refused:
+                return JsonResponse({'error': str(refused)}, status=refused.status)
+            if adapt_parent is not None:
+                return adapt_upload_folders(request, adapt_parent, files, file_paths)
             
             # First, identify unique root folders and their target names
             root_folders = {}  # original_name -> unique_name
@@ -1711,7 +2001,7 @@ def upload_folders(request):
                     folder=current_folder,
                     is_folder=False
                 )
-                
+
                 # Create file object with unique name
                 file_obj = File.objects.create(
                     name=unique_filename,
@@ -1742,19 +2032,6 @@ def upload_folders(request):
             # Check if any folders were renamed
             renamed_folders = [f"{orig} → {unique}" for orig, unique in root_folders.items() if orig != unique]
             
-            # Trigger recursive embedding generation for root folders
-            # This will generate embeddings for all subfolders and files recursively
-            for folder_path, folder_obj in created_folders.items():
-                # Only trigger for root folders (no parent or parent is the specified parent folder)
-                if folder_obj.parent == parent_folder:
-                    try:
-                        from .tasks import generate_recursive_embeddings_task
-                        generate_recursive_embeddings_task.delay(str(folder_obj.id))
-                    except Exception as e:
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.error(f"Failed to trigger recursive embeddings for folder {folder_obj.name}: {e}")
-            
             message = f'Successfully uploaded {files_created} files in {folders_created} folders'
             if renamed_folders:
                 message += f'. Renamed duplicate folders: {", ".join(renamed_folders)}'
@@ -1767,6 +2044,8 @@ def upload_folders(request):
                 'message': message
             })
             
+        except adapt_storage.AdaptWriteError as e:
+            return JsonResponse({'error': str(e)}, status=400)
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
     
@@ -1857,15 +2136,50 @@ def dashboard_stats(request):
     
     return JsonResponse({'success': False, 'error': 'Method not allowed'})
 
-class RegisterView(CreateView):
-    form_class = RegistrationForm
-    template_name = 'registration/register.html'
+
+def auth_check(request):
+    """Answer nginx auth_request subrequests for /media/ and GeoServer.
+
+    nginx serves those paths itself, so Django never sees the request. nginx asks
+    here first, forwarding the session cookie: 204 lets it through, 401 refuses.
+    A user who must change their password is refused too.
+    """
+    allowed = request.user.is_authenticated and not must_change_password(request.user)
+    return HttpResponse(status=204 if allowed else 401)
+
+
+def favicon(request):
+    """Serve static/favicon.ico at /favicon.ico, where browsers look for it.
+
+    Served by Django rather than from /static/ so it works whether or not a
+    static file server sits in front, and exempt from the login requirement so
+    the login page has its icon too.
+    """
+    path = finders.find('favicon.ico')
+    if path is None:
+        raise Http404('No favicon')
+    response = FileResponse(open(path, 'rb'), content_type='image/x-icon')
+    response['Cache-Control'] = 'public, max-age=86400'
+    return response
+
+
+class ChangePasswordView(PasswordChangeView):
+    """Change the signed-in user's password, and release them if they were held on this form."""
+    form_class = NewPasswordChangeForm
     success_url = reverse_lazy('filemanager:dashboard')
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['forced'] = must_change_password(self.request.user)
+        return context
+
     def form_valid(self, form):
+        # Saving the new password also deletes the user's API tokens (signals.py).
         response = super().form_valid(form)
-        messages.success(self.request, 'Account created successfully!')
+        UserProfile.objects.filter(user=self.request.user).update(must_change_password=False)
+        messages.success(self.request, 'Your password has been changed.')
         return response
+
 
 class DocumentationView(TemplateView):
     """Documentation page view"""
@@ -2414,11 +2728,15 @@ class SearchView(TemplateView):
                     limit=1000  # Get more results for pagination
                 )
                 
-                # Convert results to template format
+                # Convert results to template format. ADAPT hits have no object:
+                # the template shows their name, url and metadata instead.
                 for result in raw_results:
                     search_results.append({
                         'object': result['object'],
                         'type': result['type'],
+                        'name': result['name'],
+                        'url': result.get('url'),
+                        'metadata': result['metadata'],
                         'relevance': result.get('relevance', 1.0),
                         'metadata_text': result['name']
                     })
@@ -2481,6 +2799,21 @@ def search_api(request):
             suggestions = []
             for result in results:
                 try:
+                    if result['type'] in ('adapt_file', 'adapt_folder'):
+                        # On the ADAPT share: no row, so no id; the path names it.
+                        suggestions.append({
+                            'id': None,
+                            'type': 'folder' if result['type'] == 'adapt_folder' else 'file',
+                            'source': 'adapt',
+                            'path': result['metadata']['path'],
+                            'name': result['name'],
+                            'icon': result['metadata']['icon'],
+                            'url': result['url'],
+                            'is_public': False,
+                            'relevance': result.get('relevance', 1.0)
+                        })
+                        continue
+
                     obj = result['object']
                     obj_type = result['type']
                     
@@ -2561,11 +2894,8 @@ def run_seeding_tool(request):
             return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
         
         # Validate output folder if provided
-        if output_folder_id:
-            try:
-                output_folder = Folder.objects.get(id=output_folder_id, owner=request.user)
-            except Folder.DoesNotExist:
-                return JsonResponse({'success': False, 'error': 'Output folder not found'}, status=404)
+        if output_folder_id and not Folder.objects.filter(id=output_folder_id, owner=request.user).exists():
+            return JsonResponse({'success': False, 'error': 'Output folder not found'}, status=404)
         
         # Validate file type
         file_ext = os.path.splitext(file_obj.name)[1].lower()
@@ -2671,11 +3001,8 @@ def run_shape_to_json(request):
             return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
         
         # Validate output folder if provided
-        if output_folder_id:
-            try:
-                output_folder = Folder.objects.get(id=output_folder_id, owner=request.user)
-            except Folder.DoesNotExist:
-                return JsonResponse({'success': False, 'error': 'Output folder not found'}, status=404)
+        if output_folder_id and not Folder.objects.filter(id=output_folder_id, owner=request.user).exists():
+            return JsonResponse({'success': False, 'error': 'Output folder not found'}, status=404)
         
         # Validate file type
         file_ext = os.path.splitext(file_obj.name)[1].lower()
@@ -2842,11 +3169,8 @@ def run_si_tool(request):
                 return JsonResponse({'success': False, 'error': 'Indicator block file not found'}, status=404)
         
         # Validate output folder if provided
-        if output_folder_id:
-            try:
-                output_folder = Folder.objects.get(id=output_folder_id, owner=request.user)
-            except Folder.DoesNotExist:
-                return JsonResponse({'success': False, 'error': 'Output folder not found'}, status=404)
+        if output_folder_id and not Folder.objects.filter(id=output_folder_id, owner=request.user).exists():
+            return JsonResponse({'success': False, 'error': 'Output folder not found'}, status=404)
         
         # Trigger the Celery task
         from .tasks import run_si_tool_task
@@ -2956,6 +3280,15 @@ def rename_file(request):
         if file_obj.owner != request.user:
             return JsonResponse({'success': False, 'error': 'Permission denied. Only the owner can rename this file.'}, status=403)
         
+        # Renames are not written through to the share, so allowing one would
+        # leave the name in ADMA and the name on the warehouse disagreeing, and
+        # the folder page, which lists the share itself, would show the old name.
+        if file_obj.is_third_party and file_obj.third_party_source == 'adapt':
+            return JsonResponse({
+                'success': False,
+                'error': 'Files on the ADAPT share cannot be renamed from ADMA.'
+            }, status=400)
+
         # Validate new name
         if '/' in new_name or '\\' in new_name:
             return JsonResponse({'success': False, 'error': 'File name cannot contain slashes'}, status=400)

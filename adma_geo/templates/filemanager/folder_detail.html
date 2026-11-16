@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load folder_counts file_display %}
 
 {% block title %}{{ folder.name }} - ADMA{% endblock %}
 
@@ -128,6 +129,9 @@
                     {% if folder.is_public %}
                         <span class="badge bg-info me-2">Public</span>
                     {% endif %}
+                    {% if is_adapt and not can_upload %}
+                        <span class="badge bg-secondary me-2" title="You can open and download files here, but not upload or change them.">Read only</span>
+                    {% endif %}
                     Created by {{ folder.owner.username }} on {{ folder.created_at|date:"M d, Y" }}
                 </p>
             </div>
@@ -137,7 +141,7 @@
 
 <!-- Main content + Actions sidebar (two columns; sidebar only when folder is owned by current user) -->
 <div class="row">
-    <div class="{% if can_edit %}col-lg-8{% else %}col-12{% endif %}">
+    <div class="{% if can_edit or can_upload %}col-lg-8{% else %}col-12{% endif %}">
 <!-- Folder Metadata Panel -->
 <div class="row mb-4">
     <div class="col-12">
@@ -159,7 +163,7 @@
                             </tr>
                             <tr>
                                 <th>Contents:</th>
-                                <td>{{ total_subfolders|default:subfolders.count }} folders, {{ total_files|default:files.count }} files</td>
+                                <td>{% with nf=total_subfolders|default:subfolders.count nfi=total_files|default:files.count %}{{ nf }} folder{{ nf|pluralize }}, {{ nfi }} file{{ nfi|pluralize }}{% endwith %}</td>
                             </tr>
                             <tr>
                                 <th>Owner:</th>
@@ -465,7 +469,7 @@
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">
                     <i class="fas fa-list me-2"></i>Contents
-                    <span class="text-muted">({{ total_subfolders|default:subfolders.count }} folders, {{ total_files|default:files.count }} files)</span>
+                    <span class="text-muted">({% with nf=total_subfolders|default:subfolders.count nfi=total_files|default:files.count %}{{ nf }} folder{{ nf|pluralize }}, {{ nfi }} file{{ nfi|pluralize }}{% endwith %})</span>
                 </h5>
                 <div class="btn-group" role="group" aria-label="View toggle">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="listViewBtn" onclick="toggleView('list')">
@@ -493,7 +497,7 @@
                                     <div class="flex-grow-1">
                                         <h6 class="mb-1 fw-bold">{{ subfolder.name }}</h6>
                                         <small class="text-muted">
-                                            {{ subfolder.file_count }} files • {{ subfolder.subfolder_count }} folders
+                                            {% with counts=subfolder|counts_for:user %}{{ counts.files }} file{{ counts.files|pluralize }} • {{ counts.subfolders }} folder{{ counts.subfolders|pluralize }}{% endwith %}
                                         </small>
                                         <br>
                                         <small class="text-muted">
@@ -503,7 +507,7 @@
                                             {{ subfolder.created_at|date:"M d, Y" }}
                                         </small>
                                     </div>
-                                    {% if can_edit %}
+                                    {% if can_edit and not subfolder.is_adapt %}
                                     <div class="dropdown">
                                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" onclick="event.stopPropagation()">
                                             <i class="fas fa-ellipsis-v"></i>
@@ -536,7 +540,7 @@
                                     <div class="flex-grow-1">
                                         <h6 class="mb-1 fw-bold">{{ file.name|truncatechars:25 }}</h6>
                                         <small class="text-muted">
-                                            {{ file.get_size_display }} • {{ file.file_type|title }}
+                                            {{ file.get_size_display }} • {{ file.file_type|file_type_label }}
                                         </small>
                                         <br>
                                         <small class="text-muted">
@@ -555,9 +559,11 @@
                                             <li><a class="dropdown-item" href="{% url 'filemanager:download_file' file.id %}">
                                                 <i class="fas fa-download me-2"></i>Download
                                             </a></li>
+                                            {% if not file.is_adapt %}
                                             <li><a class="dropdown-item" href="#" onclick="deleteItem('file', '{{ file.id }}', '{{ file.name }}')">
                                                 <i class="fas fa-trash me-2"></i>Delete
                                             </a></li>
+                                            {% endif %}
                                         </ul>
                                     </div>
                                     {% endif %}
@@ -600,11 +606,12 @@
                                         </div>
                                     </td>
                                     <td><span class="text-muted">Folder</span></td>
-                                    <td><span class="text-muted">{{ subfolder.file_count }} files</span></td>
+                                    <td><span class="text-muted">{% with counts=subfolder|counts_for:user %}{{ counts.files }} file{{ counts.files|pluralize }}{% endwith %}</span></td>
                                     <td>{{ subfolder.updated_at|date:"M d, Y H:i" }}</td>
                                     <td><span class="badge bg-secondary">Folder</span></td>
                                     {% if can_edit %}
                                     <td>
+                                        {% if not subfolder.is_adapt %}
                                         <div class="dropdown" onclick="event.stopPropagation()">
                                             <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown">
                                                 <i class="fas fa-ellipsis-v"></i>
@@ -615,6 +622,7 @@
                                                 </a></li>
                                             </ul>
                                         </div>
+                                        {% endif %}
                                     </td>
                                     {% endif %}
                                 </tr>
@@ -634,7 +642,7 @@
                                             </div>
                                         </div>
                                     </td>
-                                    <td><span class="badge bg-secondary">{{ file.file_type|title }}</span></td>
+                                    <td><span class="badge bg-secondary">{{ file.file_type|file_type_label }}</span></td>
                                     <td>{{ file.get_size_display }}</td>
                                     <td>{{ file.updated_at|date:"M d, Y H:i" }}</td>
                                     <td>
@@ -659,9 +667,11 @@
                                                    <i class="fas fa-map-marked-alt me-2"></i>View on Map
                                                </a></li>
                                                {% endif %}
+                                               {% if not file.is_adapt %}
                                                <li><a class="dropdown-item" href="#" onclick="deleteItem('file', '{{ file.id }}', '{{ file.name }}')">
                                                    <i class="fas fa-trash me-2"></i>Delete
                                                </a></li>
+                                               {% endif %}
                                             </ul>
                                         </div>
                                     </td>
@@ -678,7 +688,7 @@
                     <i class="fas fa-folder-open" style="font-size: 4rem; color: #007bff; opacity: 0.3;"></i>
                     <h4 class="mt-3 text-muted">This folder is empty</h4>
                     <p class="text-muted">Add files or create subfolders to organize your data</p>
-                    {% if can_edit %}
+                    {% if can_upload %}
                     <div class="d-flex justify-content-center gap-2 mt-3">
                         <button class="btn btn-outline-primary" onclick="showCreateFolderModal()">
                             <i class="fas fa-folder-plus me-2"></i>Create Folder
@@ -752,8 +762,8 @@
 </div>
 
     </div>
-    {% if can_edit %}
-    <!-- Actions panel: only shown when folder is owned by current user -->
+    {% if can_edit or can_upload %}
+    <!-- Actions panel: shown to the folder's owner, and in ADAPT folders to users who may upload -->
     <div class="col-lg-4">
         <div class="card">
             <div class="card-header">
@@ -782,6 +792,7 @@
                             </a>
                         {% endif %}
                     {% endif %}
+                    {% if can_upload %}
                     <button type="button" class="btn btn-outline-primary" onclick="showCreateFolderModal()">
                         <i class="fas fa-folder-plus me-2"></i>New Folder
                     </button>
@@ -791,17 +802,20 @@
                     <button type="button" class="btn btn-primary" onclick="showUploadModal()">
                         <i class="fas fa-upload me-2"></i>Upload Files
                     </button>
+                    {% endif %}
+                    {% if can_edit %}
                     <button type="button" class="btn btn-outline-primary" onclick="toggleVisibility()">
                         <i class="fas fa-exchange-alt me-2"></i>Toggle Visibility
                     </button>
                     <button type="button" class="btn btn-danger" onclick="deleteFolder()">
                         <i class="fas fa-trash me-2"></i>Delete Folder
                     </button>
+                    {% endif %}
                 </div>
                 <div class="mt-4">
                     <h6>Folder Details</h6>
                     <ul class="list-unstyled">
-                        <li><i class="fas fa-folder me-2"></i>{{ total_subfolders|default:subfolders.count }} folders, {{ total_files|default:files.count }} files</li>
+                        <li><i class="fas fa-folder me-2"></i>{% with nf=total_subfolders|default:subfolders.count nfi=total_files|default:files.count %}{{ nf }} folder{{ nf|pluralize }}, {{ nfi }} file{{ nfi|pluralize }}{% endwith %}</li>
                         <li><i class="fas fa-database me-2"></i>{% if folder.get_total_size > 0 %}{{ folder.get_total_size|filesizeformat }}{% else %}0 bytes{% endif %}</li>
                         <li><i class="fas fa-user me-2"></i>{{ folder.owner.username }}</li>
                         {% if folder.is_public %}
@@ -817,8 +831,8 @@
     {% endif %}
 </div>
 
-<!-- Include modals if user can edit -->
-{% if can_edit %}
+<!-- Include modals if user can edit or upload -->
+{% if can_edit or can_upload %}
 <!-- Create Folder Modal -->
 <div class="modal fade" id="createFolderModal" tabindex="-1">
     <div class="modal-dialog">
@@ -833,7 +847,7 @@
                         <label for="folderName" class="form-label">Folder Name</label>
                         <input type="text" class="form-control" id="folderName" required>
                     </div>
-                    <div class="form-check">
+                    <div class="form-check{% if is_adapt %} d-none{% endif %}">
                         <input class="form-check-input" type="checkbox" id="folderIsPublic">
                         <label class="form-check-label" for="folderIsPublic">
                             Make this folder public
@@ -869,7 +883,7 @@
                         <h6>Selected Files:</h6>
                         <ul id="fileList" class="list-group"></ul>
                     </div>
-                    <div class="form-check mt-3">
+                    <div class="form-check mt-3{% if is_adapt %} d-none{% endif %}">
                         <input class="form-check-input" type="checkbox" id="filesArePublic">
                         <label class="form-check-label" for="filesArePublic">
                             Make these files public
@@ -912,7 +926,7 @@
 {% endblock %}
 
 {% block extra_js %}
-{% if can_edit %}
+{% if can_edit or can_upload %}
 <script>
 // CSRF token setup
 function getCookie(name) {
@@ -1271,7 +1285,7 @@ function renderSimpleFolderTree(structure, container) {
             <div class="d-flex align-items-center">
                 <i class="fas fa-folder text-warning me-2"></i>
                 <strong>${folderName}</strong>
-                <span class="badge bg-secondary ms-2">${structure[folderName].files.length} files</span>
+                <span class="badge bg-secondary ms-2">${structure[folderName].files.length} file${structure[folderName].files.length === 1 ? '' : 's'}</span>
             </div>
         `;
         container.appendChild(folderDiv);
@@ -1336,7 +1350,7 @@ function renderSimpleFolderTree(structure, container) {
             const data = await response.json();
             
             if (data.success) {
-                alert(`Success! Uploaded ${data.files_created} files in ${data.folders_created} folders.`);
+                alert(`Success! Uploaded ${data.files_created} file${data.files_created === 1 ? '' : 's'} in ${data.folders_created} folder${data.folders_created === 1 ? '' : 's'}.`);
                 location.reload(); // Reload to show new folders and files
             } else {
                 alert(data.error || 'Error uploading folders');
@@ -2485,7 +2499,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             </div>
                         </div>
                     </div>
-                    <div class="form-check mt-3">
+                    <div class="form-check mt-3{% if is_adapt %} d-none{% endif %}">
                         <input class="form-check-input" type="checkbox" id="foldersArePublic">
                         <label class="form-check-label" for="foldersArePublic">
                             Make uploaded folders and files public

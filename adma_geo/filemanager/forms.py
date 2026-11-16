@@ -1,7 +1,7 @@
 from django import forms
-from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth import get_user_model
-from .models import Folder, File
+from django.contrib.auth.forms import PasswordChangeForm
+from .models import Folder
 
 User = get_user_model()
 
@@ -20,21 +20,6 @@ class MultipleFileField(forms.FileField):
         else:
             result = single_file_clean(data, initial)
         return result
-
-class RegistrationForm(UserCreationForm):
-    email = forms.EmailField(required=True)
-    first_name = forms.CharField(max_length=30, required=True)
-    last_name = forms.CharField(max_length=150, required=True)
-
-    class Meta:
-        model = User
-        fields = ('username', 'first_name', 'last_name', 'email', 'password1', 'password2')
-
-    def clean_email(self):
-        email = self.cleaned_data['email']
-        if User.objects.filter(email=email).exists():
-            raise forms.ValidationError("A user with that email already exists.")
-        return email
 
 class FolderForm(forms.ModelForm):
     class Meta:
@@ -58,3 +43,18 @@ class FileUploadForm(forms.Form):
             'class': 'form-check-input'
         })
     )
+
+
+class NewPasswordChangeForm(PasswordChangeForm):
+    """Django's change password form, refusing to keep the current password.
+
+    An account made by the roster loader starts with a one-time password that was
+    printed in a table. Typing it again as the new one would defeat the change.
+    """
+
+    def clean(self):
+        cleaned_data = super().clean()
+        new_password = cleaned_data.get('new_password1')
+        if new_password and self.user.check_password(new_password):
+            self.add_error('new_password1', 'Choose a password different from your current one.')
+        return cleaned_data

@@ -1,7 +1,8 @@
-import os
 import uuid
 from pathlib import Path
+from django.core.validators import RegexValidator
 from django.db import models
+from django.db.models.functions import Lower, Upper
 # from django.contrib.gis.db import models as gis_models  # Disabled for now
 # from django.contrib.gis.geos import Point
 from django.contrib.auth import get_user_model
@@ -53,7 +54,7 @@ class Folder(models.Model):
         help_text="Name of the third-party platform (e.g., 'Google Drive', 'Dropbox', 'AWS S3')"
     )
     third_party_id = models.CharField(
-        max_length=255, 
+        max_length=1024,
         blank=True, 
         null=True,
         help_text="Unique identifier from the third-party platform"
@@ -133,6 +134,11 @@ class Folder(models.Model):
         return " | ".join(metadata_parts)
     
     @property
+    def is_adapt(self):
+        """True for a row standing for a folder on the ADAPT share. Pages offer no Delete for these."""
+        return self.is_third_party and self.third_party_source == 'adapt'
+
+    @property
     def uses_cached_totals(self):
         """True for folders whose totals come from recompute_folder_sizes rather
         than a live recursive walk. Only reference-backed sources qualify: John Deere
@@ -179,17 +185,19 @@ class Folder(models.Model):
     
     @property
     def content_summary(self):
-        """Get a summary of folder contents for display (e.g., '3 folders, 81 files')"""
-        subfolder_count = self.subfolder_count
-        direct_file_count = self.file_count
-        total_files = self.total_file_count
-        
+        """Get a summary of folder contents for display (e.g., '3 folders, 81 files').
+        Counts everything; for an ADAPT folder shown to a user, use
+        permissions.FolderCounts, which counts only what that user may see."""
+        return self.describe_contents(self.subfolder_count, self.total_file_count)
+
+    @staticmethod
+    def describe_contents(subfolder_count, total_files):
         parts = []
         if subfolder_count > 0:
-            parts.append(f"{subfolder_count} folder{'s' if subfolder_count != 1 else ''}")
+            parts.append(f"{subfolder_count:,} folder{'s' if subfolder_count != 1 else ''}")
         if total_files > 0:
-            parts.append(f"{total_files} file{'s' if total_files != 1 else ''}")
-        
+            parts.append(f"{total_files:,} file{'s' if total_files != 1 else ''}")
+
         if not parts:
             return "Empty"
         return ", ".join(parts)
@@ -239,13 +247,13 @@ class File(models.Model):
         help_text="Name of the third-party platform (e.g., 'Google Drive', 'Dropbox', 'AWS S3')"
     )
     third_party_id = models.CharField(
-        max_length=255, 
+        max_length=1024,
         blank=True, 
         null=True,
         help_text="Unique identifier from the third-party platform"
     )
     third_party_url = models.URLField(
-        max_length=500,
+        max_length=1024,
         blank=True,
         null=True,
         help_text="URL to the file on the third-party platform"
@@ -258,6 +266,10 @@ class File(models.Model):
     geoserver_workspace = models.CharField(max_length=100, blank=True, null=True, help_text="GeoServer workspace")
     spatial_extent = models.TextField(null=True, blank=True, help_text="Spatial extent of the data (JSON)")
     crs = models.CharField(max_length=50, blank=True, null=True, help_text="Coordinate Reference System")
+    drone_photo = models.JSONField(
+        null=True, blank=True,
+        help_text="For a raw drone photo: its camera and where the drone was (gis_read.DronePhotoInfo)",
+    )
     
     # Processing status for GIS files
     GIS_STATUS_CHOICES = [
@@ -266,6 +278,8 @@ class File(models.Model):
         ('processed', 'Processed'),
         ('published', 'Published to GeoServer'),
         ('error', 'Processing Error'),
+        # Read, but not a map: a raw drone photo has only the drone's GPS point (drone_photo).
+        ('drone_photo', 'Drone photo'),
     ]
     gis_status = models.CharField(max_length=20, choices=GIS_STATUS_CHOICES, default='pending', blank=True)
     processing_log = models.TextField(blank=True, help_text="Log of processing steps")
@@ -278,6 +292,13 @@ class File(models.Model):
     class Meta:
         unique_together = ('name', 'folder', 'owner')
         ordering = ['name']
+        indexes = [
+            # adapt_records finds the record for a file on the ADAPT share by its path, without case.
+            models.Index(
+                Upper('third_party_id'), condition=models.Q(third_party_source='adapt'),
+                name='file_adapt_path_idx',
+            ),
+        ]
 
     def __str__(self):
         return self.name
@@ -301,6 +322,44 @@ class File(models.Model):
         # Proceed with normal deletion
         super().delete(*args, **kwargs)
 
+    def apply_extension_metadata(self, filename):
+        """Derive file_type, is_spatial and geoserver_workspace from an extension.
+
+        save() applies this for locally stored files. ADAPT references have no
+        FieldFile to read the name from, so adapt_records applies it explicitly
+        using the name the file was given on the share.
+        """
+        if self.is_spatial_name(filename):
+            self.is_spatial = True
+            if not self.geoserver_workspace:
+                self.geoserver_workspace = getattr(settings, 'GEOSERVER_WORKSPACE', 'adma_geo')
+
+        self.file_type = self.file_type_for(filename)
+
+    @staticmethod
+    def is_spatial_name(filename):
+        """True for a spatial file: an extension in settings.ALL_SPATIAL_EXTENSIONS. Uploads of one start GIS processing."""
+        return Path(filename).suffix.lower() in getattr(settings, 'ALL_SPATIAL_EXTENSIONS', [])
+
+    @staticmethod
+    def file_type_for(filename):
+        """The file_type for a file named `filename`: 'csv', 'spreadsheet', 'gis', 'image', 'text', 'document' or 'other'."""
+        file_ext = Path(filename).suffix.lower()
+        if file_ext == '.csv':
+            return 'csv'
+        if file_ext in ['.xlsx', '.xls']:
+            return 'spreadsheet'
+        if (file_ext in getattr(settings, 'GIS_FILE_EXTENSIONS', [])
+                or file_ext in getattr(settings, 'ALL_SPATIAL_EXTENSIONS', [])):
+            return 'gis'
+        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+            return 'image'
+        if file_ext in ['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml']:
+            return 'text'
+        if file_ext in ['.pdf', '.doc', '.docx', '.ppt', '.pptx']:
+            return 'document'
+        return 'other'
+
     def save(self, *args, **kwargs):
         if self.file:
             # Set file size
@@ -311,55 +370,43 @@ class File(models.Model):
             if not self.name:
                 self.name = Path(self.file.name).stem
             
-            # Determine file type based on extension
-            file_ext = Path(self.file.name).suffix.lower()
-            
-            # Check if it's a spatial file (for display purposes)
-            if file_ext in getattr(settings, 'ALL_SPATIAL_EXTENSIONS', []):
-                self.is_spatial = True
-                if not self.geoserver_workspace:
-                    self.geoserver_workspace = getattr(settings, 'GEOSERVER_WORKSPACE', 'adma_geo')
-            
-            # Determine file type for display and processing
-            if file_ext == '.csv':
-                self.file_type = 'csv'
-            elif file_ext in ['.xlsx', '.xls']:
-                self.file_type = 'spreadsheet'
-            elif file_ext in getattr(settings, 'GIS_FILE_EXTENSIONS', []) or file_ext in getattr(settings, 'ALL_SPATIAL_EXTENSIONS', []):
-                self.file_type = 'gis'
-            elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
-                self.file_type = 'image'
-            elif file_ext in ['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml']:
-                self.file_type = 'text'
-            elif file_ext in ['.pdf', '.doc', '.docx', '.ppt', '.pptx']:
-                self.file_type = 'document'
-            else:
-                self.file_type = 'other'
+            self.apply_extension_metadata(self.file.name)
         
         super().save(*args, **kwargs)
 
     def get_size_display(self):
         """Return human-readable file size"""
-        size = self.file_size
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        return self.describe_size(self.file_size)
+
+    @staticmethod
+    def describe_size(size):
+        """A size in bytes as people read it, for example "236 B" or "2.5 MB"."""
+        if size < 1024:
+            return f"{size:.0f} B"
+        for unit in ['KB', 'MB', 'GB', 'TB']:
+            size /= 1024
             if size < 1024:
                 return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} PB"
+        return f"{size / 1024:.1f} PB"
 
     def get_icon_class(self):
         """Return FontAwesome icon class based on file type"""
-        if self.file_type == 'image':
+        return self.icon_class_for(self.file_type)
+
+    @staticmethod
+    def icon_class_for(file_type):
+        """The FontAwesome icon class for a file of `file_type`."""
+        if file_type == 'image':
             return 'fas fa-image image-icon'
-        elif self.file_type == 'text':
+        elif file_type == 'text':
             return 'fas fa-file-code text-icon'
-        elif self.file_type == 'csv':
+        elif file_type == 'csv':
             return 'fas fa-table csv-icon'
-        elif self.file_type == 'spreadsheet':
+        elif file_type == 'spreadsheet':
             return 'fas fa-file-excel spreadsheet-icon'
-        elif self.file_type == 'document':
+        elif file_type == 'document':
             return 'fas fa-file-alt document-icon'
-        elif self.file_type == 'gis':
+        elif file_type == 'gis':
             return 'fas fa-map-marked-alt gis-icon'
         else:
             return 'fas fa-file file-icon'
@@ -418,6 +465,11 @@ class File(models.Model):
         return [membership.map for membership in self.map_memberships.all()]
 
     # ---- ADAPT (third-party warehouse) reference support ----
+    @property
+    def is_adapt(self):
+        """True for a record of a file on the ADAPT share. Pages offer no Delete for these."""
+        return self.is_third_party and self.third_party_source == 'adapt'
+
     def is_adapt_reference(self):
         """True if this File references a file on the mounted ADAPT share
         rather than storing a local copy in MEDIA_ROOT."""
@@ -438,6 +490,19 @@ class File(models.Model):
                 f"File {self.id} has no stored content and no reference path"
             )
         return self.file.open(mode)
+
+    @property
+    def local_path(self):
+        """Filesystem path to this File's bytes.
+
+        For tools that need a path rather than a handle: GDAL, geopandas and the
+        GeoServer ingestion helpers all open files by name. ADAPT references
+        resolve to their path on the mount, so those tools work on warehouse
+        files without a copy into MEDIA_ROOT.
+        """
+        if self.is_adapt_reference():
+            return self.third_party_url
+        return self.file.path
 
     @property
     def preview_url(self):
@@ -548,7 +613,7 @@ class Map(models.Model):
         # Build comprehensive metadata string
         metadata_parts = [
             f"Map name: {self.name}",
-            f"Map type: composite spatial map",
+            "Map type: composite spatial map",
             f"Owner: {self.owner.username}",
             f"Visibility: {visibility}",
             f"Layer count: {layer_count}",
@@ -609,7 +674,10 @@ class Map(models.Model):
                     url = f"{settings.GEOSERVER_URL}/rest/workspaces/{file_obj.geoserver_workspace}/datastores/{file_obj.geoserver_datastore_name}/featuretypes/{file_obj.geoserver_layer_name}"
                 
                 headers = {'Accept': 'application/json'} if file_extension not in ['tif', 'tiff', 'geotif', 'geotiff'] else {}
-                response = requests.get(url, auth=HTTPBasicAuth('admin', 'geoserver'), headers=headers, timeout=10)
+                response = requests.get(
+                    url, auth=HTTPBasicAuth(settings.GEOSERVER_ADMIN_USER, settings.GEOSERVER_ADMIN_PASSWORD),
+                    headers=headers, timeout=10,
+                )
                 
                 if response.status_code == 200:
                     if file_extension in ['tif', 'tiff', 'geotif', 'geotiff']:
@@ -717,7 +785,7 @@ class MapLayer(models.Model):
     # Layer properties
     layer_order = models.IntegerField(
         default=0, 
-        help_text="Display order in the map (lower numbers appear on top)"
+        help_text="Display order in the map (higher numbers draw on top)"
     )
     opacity = models.FloatField(
         default=1.0, 
@@ -1040,3 +1108,178 @@ class Tool(models.Model):
             created_tools.append((tool, created))
         
         return created_tools
+
+
+class FolderGrant(models.Model):
+    """Access to a folder on the ADAPT share and everything beneath it, for one user or one group.
+
+    ADMA reads the ADAPT share through a single account that sees all of it, so
+    the share's own permissions never reach ADMA users. Who sees which folder is
+    decided here instead, by an administrator. See filemanager.permissions.
+
+    The folder is named by its path on the share, as ADMA spells paths (see
+    filemanager.adapt_share): "Soils/2024", or "" for the whole share. Paths
+    compare without case, as on the share.
+    """
+    path = models.CharField(
+        max_length=1024, blank=True,
+        help_text='Folder on the ADAPT share, e.g. "Soils/2024". Empty means the whole share.',
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, null=True, blank=True, related_name='folder_grants',
+    )
+    group = models.ForeignKey(
+        'auth.Group', on_delete=models.CASCADE, null=True, blank=True, related_name='folder_grants',
+    )
+    can_write = models.BooleanField(
+        default=False,
+        help_text="Also allow uploads and changes. Has no effect while the share is mounted read-only.",
+    )
+    granted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['path']
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(user__isnull=False, group__isnull=True)
+                    | models.Q(user__isnull=True, group__isnull=False)
+                ),
+                name='foldergrant_user_xor_group',
+                violation_error_message='Choose a user or a group, not both and not neither.',
+            ),
+            models.UniqueConstraint(
+                Lower('path'), 'user', condition=models.Q(user__isnull=False),
+                name='foldergrant_unique_user_path',
+                violation_error_message='This user already has a grant on this folder. Edit that grant instead.',
+            ),
+            models.UniqueConstraint(
+                Lower('path'), 'group', condition=models.Q(group__isnull=False),
+                name='foldergrant_unique_group_path',
+                violation_error_message='This group already has a grant on this folder. Edit that grant instead.',
+            ),
+        ]
+
+    def __str__(self):
+        who = self.user.username if self.user_id else f'group {self.group.name}'
+        return f"{who} {'read/write' if self.can_write else 'read'} {self.path or 'the whole ADAPT share'}"
+
+
+class UserProfile(models.Model):
+    """What ADMA keeps about a person beyond Django's own User fields.
+
+    The NUID is the University of Nebraska ID. The ADAPT roster and the snr18
+    permission export name people by it (NEAD\\<NUID>), so it is how both reach
+    an ADMA account. Accounts made by hand have no NUID.
+
+    must_change_password holds a user on the change password form. An account
+    without a profile is never held.
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    nuid = models.CharField(
+        'NUID', max_length=8, unique=True, null=True, blank=True,
+        validators=[RegexValidator(r'^\d{8}$', 'A NUID is 8 digits, leading zeros included.')],
+        help_text='University of Nebraska ID, 8 digits. Set by adapt_users load.',
+    )
+    must_change_password = models.BooleanField(
+        default=False,
+        help_text='Send this user to the change password form until they choose a new password. '
+                  'Set for accounts adapt_users load creates; cleared when the user changes it.',
+    )
+
+    def __str__(self):
+        return f'{self.user.username} ({self.nuid or "no NUID"})'
+
+
+class RosterGroup(models.Model):
+    """Marks a Django group as the ADAPT roster's.
+
+    adapt_users load keeps the members of every marked group exactly as the
+    roster lists them, and marks each group the roster names. The mark stays
+    when a group drops out of the roster, so the loader then empties it instead
+    of leaving its members with the group's folder grants. Groups made by hand
+    carry no mark and the loader never touches them.
+    """
+    group = models.OneToOneField('auth.Group', on_delete=models.CASCADE, primary_key=True,
+                                 related_name='roster')
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.group.name
+
+
+def must_change_password(user):
+    """True while the user is held on the change password form."""
+    try:
+        return user.profile.must_change_password
+    except UserProfile.DoesNotExist:
+        return False
+
+
+class AdaptEntry(models.Model):
+    """A folder or file on the ADAPT share, as the last index run found it.
+
+    ADMA lists folders straight from the share. The index is only for what
+    needs the whole share at once: search, and the totals shown beside a
+    folder. It can be up to a day old, and it is rebuilt from the share by
+    filemanager.adapt_index, so nothing may point at these rows.
+
+    `path` is spelled as the share spells it (see filemanager.adapt_share);
+    `key` and `parent_key` are the same path without case, for comparing. The
+    share itself has no row: its totals are on the AdaptIndexRun.
+    """
+    path = models.CharField(max_length=1024)
+    key = models.CharField(max_length=1024)
+    parent_key = models.CharField(max_length=1024)
+    name = models.CharField(max_length=255)
+    is_dir = models.BooleanField()
+    size = models.BigIntegerField(default=0, help_text='Size of a file in bytes; 0 for a folder.')
+    mtime = models.DateTimeField(null=True, blank=True)
+    file_type = models.CharField(max_length=50, blank=True)  # as File.file_type; blank for a folder
+    # Folder totals, zero for a file: what is directly inside, then everything beneath.
+    subfolder_count = models.IntegerField(default=0)
+    file_count = models.IntegerField(default=0)
+    total_files = models.IntegerField(default=0)
+    total_size = models.BigIntegerField(default=0)
+    indexed_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['key'], name='adaptentry_unique_key'),
+        ]
+        indexes = [
+            # For "everything beneath this folder": key LIKE 'soils/%' outside the C locale.
+            models.Index(fields=['key'], name='adaptentry_key_prefix', opclasses=['varchar_pattern_ops']),
+            models.Index(fields=['parent_key'], name='adaptentry_parent_key'),
+        ]
+
+    def __str__(self):
+        return self.path
+
+
+class AdaptIndexRun(models.Model):
+    """One rebuild of the ADAPT index, with what it found.
+
+    finished_at stays empty until the run completes. The share's own totals
+    live here, since the share has no AdaptEntry row. failed_folders lists the
+    folders that could not be read, one path per line; their old rows are kept.
+    """
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+    folders = models.IntegerField(default=0)
+    files = models.IntegerField(default=0)
+    total_size = models.BigIntegerField(default=0)
+    root_subfolders = models.IntegerField(default=0)
+    root_files = models.IntegerField(default=0)
+    errors = models.IntegerField(default=0)
+    failed_folders = models.TextField(blank=True)
+    removed = models.IntegerField(default=0, help_text='Rows dropped because their path is gone from the share.')
+
+    class Meta:
+        get_latest_by = 'started_at'
+
+    def __str__(self):
+        return f'ADAPT index run {self.started_at:%Y-%m-%d %H:%M}'

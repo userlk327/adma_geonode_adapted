@@ -404,10 +404,10 @@ function filterFiles(type) {
             infoElement.textContent = `No files found matching "${searchTerm}"`;
             infoElement.style.color = '#dc3545'; // Red for no results
         } else if (visibleCount === totalCount) {
-            infoElement.textContent = `Showing all ${totalCount} files`;
+            infoElement.textContent = `Showing all ${totalCount} file${totalCount === 1 ? '' : 's'}`;
             infoElement.style.color = '#28a745'; // Green for all results
         } else {
-            infoElement.textContent = `Showing ${visibleCount} of ${totalCount} files`;
+            infoElement.textContent = `Showing ${visibleCount} of ${totalCount} file${totalCount === 1 ? '' : 's'}`;
             infoElement.style.color = '#6c757d'; // Gray for partial results
         }
     }

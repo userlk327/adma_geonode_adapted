@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load folder_counts file_display %}
 
 {% block title %}Dashboard - ADMA{% endblock %}
 
@@ -187,7 +188,7 @@
                                     </div>
                                 </td>
                                 <td><span class="text-muted">Folder</span></td>
-                                <td><span class="text-muted">{{ folder.file_count }} files</span></td>
+                                <td><span class="text-muted">{{ folder.file_count }} file{{ folder.file_count|pluralize }}</span></td>
                                 <td>
                                     <small>{{ folder.owner.username }}</small>
                                     {% if folder.owner == user %}
@@ -230,7 +231,7 @@
                                         </div>
                                     </div>
                                 </td>
-                                <td><span class="badge bg-secondary">{{ file.file_type|title }}</span></td>
+                                <td><span class="badge bg-secondary">{{ file.file_type|file_type_label }}</span></td>
                                 <td>{{ file.get_size_display }}</td>
                                 <td>
                                     <small>{{ file.owner.username }}</small>
@@ -283,7 +284,7 @@
                                         <div class="flex-grow-1">
                                             <h6 class="mb-1 fw-bold">{{ folder.name }}</h6>
                                             <small class="text-muted">
-                                                {{ folder.file_count }} files • {{ folder.subfolder_count }} folders
+                                                {{ folder.file_count }} file{{ folder.file_count|pluralize }} • {{ folder.subfolder_count }} folder{{ folder.subfolder_count|pluralize }}
                                             </small>
                                             <br>
                                             <small class="text-muted">
@@ -329,7 +330,7 @@
                                         <div class="flex-grow-1">
                                             <h6 class="mb-1 fw-bold">{{ file.name|truncatechars:25 }}</h6>
                                             <small class="text-muted">
-                                                {{ file.get_size_display }} • {{ file.file_type|title }}
+                                                {{ file.get_size_display }} • {{ file.file_type|file_type_label }}
                                             </small>
                                             <br>
                                             <small class="text-muted">
@@ -394,7 +395,7 @@
                 {% if page_obj and page_obj.num_pages > 1 %}
                 <div class="d-flex justify-content-between align-items-center mt-4">
                     <div class="text-muted">
-                        Showing {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ total_items }} items
+                        Showing {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ total_items }} item{{ total_items|pluralize }}
                     </div>
                     <nav aria-label="File pagination">
                         <ul class="pagination mb-0">
@@ -446,7 +447,7 @@
                     <h5 class="mb-0 me-3">
                         <i class="fas fa-map me-2"></i>Maps
                     </h5>
-                    <span class="badge bg-secondary">{{ all_maps|length }} maps</span>
+                    <span class="badge bg-secondary">{{ all_maps|length }} map{{ all_maps|length|pluralize }}</span>
                 </div>
                 <div class="btn-group" role="group" aria-label="Maps view toggle">
                     <button type="button" class="btn btn-sm btn-outline-secondary active" id="mapsListViewBtn" onclick="toggleSectionView('maps', 'list')">
@@ -487,7 +488,7 @@
                                             </div>
                                         </div>
                                     </td>
-                                    <td><span class="badge bg-info">{{ map.map_layers.count }} layers</span></td>
+                                    <td><span class="badge bg-info">{% with n=map.map_layers.count %}{{ n }} layer{{ n|pluralize }}{% endwith %}</span></td>
                                     <td>
                                         <small>{{ map.owner.username }}</small>
                                         {% if map.owner == user %}
@@ -545,7 +546,7 @@
                                             <p class="card-text text-muted small mb-2">{{ map.description|truncatechars:60 }}</p>
                                             {% endif %}
                                             <div class="d-flex flex-wrap gap-1 mb-2">
-                                                <span class="badge bg-info">{{ map.map_layers.count }} layers</span>
+                                                <span class="badge bg-info">{% with n=map.map_layers.count %}{{ n }} layer{{ n|pluralize }}{% endwith %}</span>
                                                 {% if map.is_public %}
                                                 <span class="badge bg-success">Public</span>
                                                 {% else %}
@@ -592,7 +593,7 @@
 {% endif %}
 
 <!-- Third-Party Data Section -->
-{% if third_party_folders or third_party_files %}
+{% if third_party_folders or third_party_files or adapt_entry %}
 <div class="row mt-4">
     <div class="col-12">
         <div class="card">
@@ -601,7 +602,7 @@
                     <h5 class="mb-0 me-3">
                         <i class="fas fa-cloud me-2"></i>Third-Party Data
                     </h5>
-                    <span class="badge bg-secondary">{{ total_third_party_folders }} folders, {{ total_third_party_files }} files</span>
+                    <span class="badge bg-secondary">{{ total_third_party_folders }} folder{{ total_third_party_folders|pluralize }}, {{ total_third_party_files }} file{{ total_third_party_files|pluralize }}</span>
                 </div>
                 <div class="btn-group" role="group" aria-label="Third-party data view toggle">
                     <button type="button" class="btn btn-sm btn-outline-secondary active" id="thirdPartyListViewBtn" onclick="toggleSectionView('thirdParty', 'list')">
@@ -630,6 +631,29 @@
                             </thead>
                             <tbody>
                                 <!-- Third-Party Folders -->
+                                {% if adapt_entry %}
+                                <tr style="cursor: pointer;" onclick="window.location.href='{{ adapt_entry.url }}'">
+                                    <td>
+                                        <div class="d-flex align-items-center">
+                                            <i class="fas fa-folder folder-icon me-3"></i>
+                                            <div><strong>ADAPT</strong></div>
+                                        </div>
+                                    </td>
+                                    <td><span class="text-muted">Folder</span></td>
+                                    <td><span class="text-muted">{{ adapt_entry.summary }}</span></td>
+                                    <td>
+                                        <span class="badge bg-purple" style="background-color: #6f42c1;">
+                                            <i class="fas fa-cloud me-1"></i>adapt
+                                        </span>
+                                    </td>
+                                    <td><small class="text-muted">Live</small></td>
+                                    <td>
+                                        <a class="btn btn-sm btn-outline-secondary" href="{{ adapt_entry.url }}" onclick="event.stopPropagation()" title="Open the ADAPT share">
+                                            <i class="fas fa-eye"></i>
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endif %}
                                 {% for folder in third_party_folders %}
                                 <tr data-folder-id="{{ folder.id }}" style="cursor: pointer;" onclick="window.location.href='{% url 'filemanager:folder_detail' folder.id %}'">
                                     <td>
@@ -644,7 +668,7 @@
                                         </div>
                                     </td>
                                     <td><span class="text-muted">Folder</span></td>
-                                    <td><span class="text-muted">{{ folder.content_summary }}</span></td>
+                                    <td><span class="text-muted">{% with counts=folder|counts_for:user %}{{ counts.summary }}{% endwith %}</span></td>
                                     <td>
                                         <span class="badge bg-purple" style="background-color: #6f42c1;">
                                             <i class="fas fa-cloud me-1"></i>{{ folder.third_party_source|default:"External" }}
@@ -660,9 +684,11 @@
                                                 <li><a class="dropdown-item" href="{% url 'filemanager:folder_detail' folder.id %}">
                                                     <i class="fas fa-eye me-2"></i>View
                                                 </a></li>
+                                                {% if folder.id in deletable_ids %}
                                                 <li><a class="dropdown-item text-danger" href="#" onclick="deleteItem('folder', '{{ folder.id }}', '{{ folder.name }}')">
                                                     <i class="fas fa-trash me-2"></i>Delete
                                                 </a></li>
+                                                {% endif %}
                                             </ul>
                                         </div>
                                     </td>
@@ -684,7 +710,7 @@
                                         </div>
                                     </td>
                                     <td>
-                                        <span class="badge bg-secondary">{{ file.file_type|title }}</span>
+                                        <span class="badge bg-secondary">{{ file.file_type|file_type_label }}</span>
                                         {% if file.is_spatial %}
                                             <span class="badge bg-info ms-1">GIS</span>
                                         {% endif %}
@@ -705,7 +731,7 @@
                                                 <li><a class="dropdown-item" href="{% url 'filemanager:download_file' file.id %}">
                                                     <i class="fas fa-download me-2"></i>Download
                                                 </a></li>
-                                                {% if file.third_party_url %}
+                                                {% if file.third_party_url and not file.is_adapt %}
                                                 <li><a class="dropdown-item" href="{{ file.third_party_url }}" target="_blank">
                                                     <i class="fas fa-external-link-alt me-2"></i>View on {{ file.third_party_source|default:"Source" }}
                                                 </a></li>
@@ -715,9 +741,11 @@
                                                     <i class="fas fa-map-marked-alt me-2"></i>View on Map
                                                 </a></li>
                                                 {% endif %}
+                                                {% if file.id in deletable_ids %}
                                                 <li><a class="dropdown-item text-danger" href="#" onclick="deleteItem('file', '{{ file.id }}', '{{ file.name }}')">
                                                     <i class="fas fa-trash me-2"></i>Delete
                                                 </a></li>
+                                                {% endif %}
                                             </ul>
                                         </div>
                                     </td>
@@ -731,10 +759,31 @@
                 <!-- Third-Party Data Panel View -->
                 <div id="thirdPartyPanelView" class="view-container" style="display: none;">
                     <!-- Third-Party Folders -->
-                    {% if third_party_folders %}
+                    {% if third_party_folders or adapt_entry %}
                     <div class="mb-4">
                         <h6 class="text-muted mb-3"><i class="fas fa-folder me-2"></i>Third-Party Folders</h6>
                         <div class="row">
+                            {% if adapt_entry %}
+                            <div class="col-md-4 col-sm-6 mb-3">
+                                <div class="folder-item" onclick="window.location.href='{{ adapt_entry.url }}'">
+                                    <div class="d-flex align-items-center">
+                                        <i class="fas fa-folder folder-icon"></i>
+                                        <div class="flex-grow-1">
+                                            <h6 class="mb-1 fw-bold">ADAPT</h6>
+                                            {% if adapt_entry.summary %}
+                                            <small class="text-muted">{{ adapt_entry.summary }}</small>
+                                            <br>
+                                            {% endif %}
+                                            <small>
+                                                <span class="badge bg-purple" style="background-color: #6f42c1;">
+                                                    <i class="fas fa-cloud me-1"></i>adapt
+                                                </span>
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
                             {% for folder in third_party_folders %}
                             <div class="col-md-4 col-sm-6 mb-3">
                                 <div class="folder-item" data-folder-id="{{ folder.id }}" onclick="window.location.href='{% url 'filemanager:folder_detail' folder.id %}'">
@@ -743,7 +792,7 @@
                                         <div class="flex-grow-1">
                                             <h6 class="mb-1 fw-bold">{{ folder.name }}</h6>
                                             <small class="text-muted">
-                                                {{ folder.content_summary }}
+                                                {% with counts=folder|counts_for:user %}{{ counts.summary }}{% endwith %}
                                             </small>
                                             <br>
                                             <small>
@@ -755,6 +804,7 @@
                                                 {% endif %}
                                             </small>
                                         </div>
+                                        {% if folder.id in deletable_ids %}
                                         <div class="dropdown">
                                             <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" onclick="event.stopPropagation()">
                                                 <i class="fas fa-ellipsis-v"></i>
@@ -765,6 +815,7 @@
                                                 </a></li>
                                             </ul>
                                         </div>
+                                        {% endif %}
                                     </div>
                                 </div>
                             </div>
@@ -809,14 +860,16 @@
                                                 <li><a class="dropdown-item" href="{% url 'filemanager:download_file' file.id %}">
                                                     <i class="fas fa-download me-2"></i>Download
                                                 </a></li>
-                                                {% if file.third_party_url %}
+                                                {% if file.third_party_url and not file.is_adapt %}
                                                 <li><a class="dropdown-item" href="{{ file.third_party_url }}" target="_blank">
                                                     <i class="fas fa-external-link-alt me-2"></i>View on {{ file.third_party_source|default:"Source" }}
                                                 </a></li>
                                                 {% endif %}
+                                                {% if file.id in deletable_ids %}
                                                 <li><a class="dropdown-item text-danger" href="#" onclick="deleteItem('file', '{{ file.id }}', '{{ file.name }}')">
                                                     <i class="fas fa-trash me-2"></i>Delete
                                                 </a></li>
+                                                {% endif %}
                                             </ul>
                                         </div>
                                     </div>
@@ -1387,7 +1440,7 @@ function renderSimpleFolderTree(structure, container) {
             <div class="d-flex align-items-center">
                 <i class="fas fa-folder text-warning me-2"></i>
                 <strong>${folderName}</strong>
-                <span class="badge bg-secondary ms-2">${structure[folderName].files.length} files</span>
+                <span class="badge bg-secondary ms-2">${structure[folderName].files.length} file${structure[folderName].files.length === 1 ? '' : 's'}</span>
             </div>
         `;
         container.appendChild(folderDiv);
@@ -1451,7 +1504,7 @@ document.getElementById('uploadFoldersForm').addEventListener('submit', async fu
             const data = await response.json();
             
             if (data.success) {
-                alert(`Success! Uploaded ${data.files_created} files in ${data.folders_created} folders.`);
+                alert(`Success! Uploaded ${data.files_created} file${data.files_created === 1 ? '' : 's'} in ${data.folders_created} folder${data.folders_created === 1 ? '' : 's'}.`);
                 location.reload(); // Reload to show new folders and files
             } else {
                 alert(data.error || 'Error uploading folders');
@@ -1604,16 +1657,12 @@ async function deleteMap(id, name) {
     if (!confirm(`Are you sure you want to delete the map "${name}"?`)) return;
     
     try {
-        const response = await fetch('{% url "filemanager:delete_item" %}', {
-            method: 'POST',
+        const url = '{% url "filemanager:delete_map" "00000000-0000-0000-0000-000000000000" %}'.replace('00000000-0000-0000-0000-000000000000', id);
+        const response = await fetch(url, {
+            method: 'DELETE',
             headers: {
-                'Content-Type': 'application/json',
                 'X-CSRFToken': csrftoken
-            },
-            body: JSON.stringify({
-                type: 'map',
-                id: id
-            })
+            }
         });
         
         const data = await response.json();
@@ -1637,6 +1686,9 @@ function toggleView(viewType) {
     const panelView = document.getElementById('panelView');
     const listBtn = document.getElementById('listViewBtn');
     const panelBtn = document.getElementById('panelViewBtn');
+    
+    // An empty dashboard draws neither view
+    if (!listView || !panelView) return;
     
     if (viewType === 'list') {
         listView.style.display = 'block';

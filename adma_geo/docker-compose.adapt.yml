@@ -14,19 +14,50 @@
 #     docker compose -f docker-compose.yml -f docker-compose.adapt.yml up -d
 #
 # See .env.adapt.example.
+#
+# ---------------------------------------------------------------------------
+# READ-ONLY BY DEFAULT
+#
+# ADAPT_ACCESS switches the whole mount between ro and rw. Leave it at ro unless
+# uploads from ADMA back to the share are wanted; then set ADAPT_ACCESS=rw and
+# ADAPT_WRITE_ENABLED=True together, and give the service account write
+# permission on the share. Both are required: the mount option decides whether
+# the kernel permits a write at all, ADAPT_WRITE_ENABLED decides whether Django
+# will attempt one.
+#
+# Docker will NOT change the options of a volume that already exists, so after
+# changing ADAPT_ACCESS the volume has to be recreated. It holds no data of its
+# own, only the mount, so this is safe:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.adapt.yml down
+#     docker volume rm adma_geo_adma_geo_adapt
+#     docker compose -f docker-compose.yml -f docker-compose.adapt.yml up -d
+#
+# Confirm which mode is live before trusting it:
+#
+#     docker compose exec django sh -c 'grep " /adapt " /proc/mounts'
+# ---------------------------------------------------------------------------
+
+x-adapt-env: &adapt-env
+  ADAPT_MOUNT: /adapt
+  ADAPT_WRITE_ENABLED: ${ADAPT_WRITE_ENABLED:-False}
+  ADAPT_WRITABLE_PREFIXES: ${ADAPT_WRITABLE_PREFIXES:-}
 
 services:
   django:
+    environment: *adapt-env
     volumes:
-      - adma_geo_adapt:/adapt:ro
+      - adma_geo_adapt:/adapt:${ADAPT_ACCESS:-ro}
 
   celery:
+    environment: *adapt-env
     volumes:
-      - adma_geo_adapt:/adapt:ro
+      - adma_geo_adapt:/adapt:${ADAPT_ACCESS:-ro}
 
   celery-beat:
+    environment: *adapt-env
     volumes:
-      - adma_geo_adapt:/adapt:ro
+      - adma_geo_adapt:/adapt:${ADAPT_ACCESS:-ro}
 
 volumes:
   adma_geo_adapt:
@@ -34,6 +65,8 @@ volumes:
     driver_opts:
       type: cifs
       device: "//${ADAPT_HOST:-snr18}/${ADAPT_SHARE:-Adapt}"
-      # ro is deliberate and belongs here as well as on the mount above: the share
-      # is a system of record we read and never write.
-      o: "username=${ADAPT_USER},password=${ADAPT_PASS},domain=${ADAPT_DOMAIN},ro,vers=${ADAPT_SMB_VERSION:-3.0},uid=0,gid=0,file_mode=0444,dir_mode=0555"
+      # ADAPT_ACCESS belongs here as well as on the mounts above: a container
+      # mounted rw against a volume mounted ro still cannot write.
+      # The permission bits follow it, because a read-only 0444/0555 tree is
+      # unwritable regardless of what the SMB session is allowed to do.
+      o: "username=${ADAPT_USER},password=${ADAPT_PASS},domain=${ADAPT_DOMAIN},${ADAPT_ACCESS:-ro},vers=${ADAPT_SMB_VERSION:-3.0},uid=0,gid=0,file_mode=${ADAPT_FILE_MODE:-0444},dir_mode=${ADAPT_DIR_MODE:-0555}"

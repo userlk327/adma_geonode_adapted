@@ -10,7 +10,7 @@ services:
     volumes:
       - adma_geo_db:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U adma_geo -d adma_geo"]
       interval: 10s
@@ -25,7 +25,7 @@ services:
     volumes:
       - adma_geo_redis:/data
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
 
   # Django Application
   django:
@@ -43,10 +43,10 @@ services:
       - adma_geo_media:/app/media
       - adma_geo_static:/app/staticfiles
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     environment:
-      DEBUG: "True"
-      SECRET_KEY: "django-secret-key-for-development"
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env next to docker-compose.yml}
       POSTGRES_DB: adma_geo
       POSTGRES_USER: adma_geo
       POSTGRES_PASSWORD: adma_geo123
@@ -88,8 +88,8 @@ services:
       - .:/app
       - adma_geo_media:/app/media
     environment:
-      DEBUG: "True"
-      SECRET_KEY: "django-secret-key-for-development"
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env next to docker-compose.yml}
       POSTGRES_DB: adma_geo
       POSTGRES_USER: adma_geo
       POSTGRES_PASSWORD: adma_geo123
@@ -127,8 +127,8 @@ services:
     volumes:
       - .:/app
     environment:
-      DEBUG: "True"
-      SECRET_KEY: "django-secret-key-for-development"
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env next to docker-compose.yml}
       POSTGRES_DB: adma_geo
       POSTGRES_USER: adma_geo
       POSTGRES_PASSWORD: adma_geo123
@@ -183,15 +183,19 @@ services:
       COMMUNITY_EXTENSIONS: ""
     volumes:
       - adma_geo_geoserver_data:/opt/geoserver/data_dir
+      # Versioned request limits; the image only writes its defaults when the file is missing
+      - ./geoserver/controlflow.properties:/opt/geoserver/data_dir/controlflow.properties:ro
       - adma_geo_media:/app/media
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/geoserver/web/wicket/resource/org.geoserver.web.GeoServerBasePage/geoserver-logo.png || exit 1"]
+      # Anonymous WMS GetCapabilities: healthy once GeoServer serves maps
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null 'http://localhost:8080/geoserver/ows?service=WMS&version=1.3.0&request=GetCapabilities' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
 volumes:
   adma_geo_db:
