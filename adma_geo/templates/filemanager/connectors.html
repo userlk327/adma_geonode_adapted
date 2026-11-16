@@ -34,6 +34,8 @@
     .conn-pill.busy { background: #fff4d6; color: #7a5600; }
     .conn-pill.busy::before { background: #e0a100; }
     .conn-pill.off::before { background: #9aa39d; }
+    .conn-pill.soon { background: #fff4d6; color: #7a5600; }
+    .conn-pill.soon::before { display: none; }
     .conn-what { color: #3d4540; }
     .conn-needs { background: #f6f8fb; border: 1px solid #e1e7f0; border-radius: 10px; padding: 12px 14px; }
     .conn-needs ul { margin: 6px 0 0; padding-left: 1.1rem; }
@@ -41,6 +43,9 @@
     .conn-runs th { font-weight: 600; color: #5d6660; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
     .conn-runs td, .conn-runs th { vertical-align: middle; }
     .conn-runs .btn, .conn-runs td.nw { white-space: nowrap; }
+    .conn-scroll { overflow-y: auto; border-bottom: 1px solid #eef1ef; }
+    .conn-scroll thead th { position: sticky; top: 0; z-index: 1; background: #fff; box-shadow: inset 0 -1px 0 #dee2e6; }
+    .conn-more { font-size: .78rem; color: #6c757d; margin-top: 4px; }
     .conn-badge { font-size: .76rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
     .conn-badge.active { background: #e7f0ff; color: #0b4fa8; }
     .conn-badge.done { background: #e6f4ea; color: #1e6b3a; }
@@ -126,33 +131,16 @@
                     <div class="flex-grow-1">
                         <div class="d-flex align-items-center gap-2 flex-wrap">
                             <h5 class="mb-0">OneDrive</h5>
-                            {% if onedrive.ready %}
-                            <span class="conn-pill off">Not connected</span>
-                            {% else %}
-                            <span class="conn-pill off">Not set up yet</span>
-                            {% endif %}
+                            <span class="conn-pill soon"><i class="fas fa-tools" aria-hidden="true"></i>Under construction</span>
                         </div>
                         <div class="text-muted small">Files in your UNL Microsoft 365 account</div>
                     </div>
-                    <button type="button" class="btn btn-outline-secondary btn-sm" disabled
-                            title="{% if onedrive.ready %}Coming soon{% else %}OneDrive is not set up on this ADMA yet{% endif %}">
-                        <i class="fas fa-plug me-1"></i>Connect
-                    </button>
                 </div>
 
-                <p class="conn-what mt-3">
-                    You will be able to pick files from your OneDrive, and Ask ADMA can read and analyze them.
-                    Results are saved to ADMA Studio. Nothing in your OneDrive is changed.
+                <p class="conn-what mt-3 mb-0">
+                    We are working on this. Soon you will be able to pick files from your OneDrive, and Ask ADMA will
+                    read and analyze them. Results will be saved to ADMA Studio, and nothing in your OneDrive will change.
                 </p>
-
-                {% if not onedrive.ready %}
-                <div class="conn-needs small">
-                    <strong>To turn this on, ADMA needs:</strong>
-                    <ul>
-                        {% for need in onedrive.needs %}<li>{{ need }}</li>{% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
             </div>
         </div>
     </div>
@@ -347,6 +335,23 @@
         if (d.toDateString() === now.toDateString()) return 'Today ' + time;
         return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
     }
+    const SHOW_ROWS = 5;
+    function fitRows(box, wrap, what) {
+        // Show the newest rows; older ones scroll inside the box, with the column names staying in view.
+        const prev = box.dataset.scrollTop ? Number(box.dataset.scrollTop) : 0;
+        const rows = wrap.querySelectorAll('tbody tr');
+        if (rows.length <= SHOW_ROWS) return;
+        wrap.classList.add('conn-scroll');
+        wrap.addEventListener('scroll', () => { box.dataset.scrollTop = wrap.scrollTop; });
+        box.appendChild(node('div', 'conn-more', 'Showing the latest ' + SHOW_ROWS + ' of ' + rows.length + ' ' + what + '. Scroll the list for older ones.'));
+        requestAnimationFrame(() => {
+            const head = wrap.querySelector('thead');
+            let h = head ? head.offsetHeight : 0;
+            for (let i = 0; i < SHOW_ROWS; i++) h += rows[i].offsetHeight;
+            if (h > 0) wrap.style.maxHeight = (h + 2) + 'px';
+            wrap.scrollTop = prev;   // a refresh keeps your place
+        });
+    }
     function basename(p) { return String(p || '').split('/').filter(Boolean).pop() || p || ''; }
 
     // ---------------------------------------------------------------- connection
@@ -452,6 +457,7 @@
         table.append(head, body);
         wrap.appendChild(table);
         box.appendChild(wrap);
+        fitRows(box, wrap, 'runs');
     }
 
     // ------------------------------------------------------------------- refresh
@@ -821,6 +827,7 @@
         table.append(head, body);
         wrap.appendChild(table);
         box.appendChild(wrap);
+        fitRows(box, wrap, 'scheduled backups');
     }
     async function cancelCopy(id, btn) {
         btn.disabled = true;
@@ -866,6 +873,7 @@
         table.append(head, body);
         wrap.appendChild(table);
         box.appendChild(wrap);
+        fitRows(box, wrap, 'copies');
     }
     async function refreshGlobus(reload) {
         if (!GLOBUS_ON || gBusy) return;
