@@ -55,7 +55,9 @@ class Command(BaseCommand):
             | (Q(geoserver_datastore_name__isnull=False) & ~Q(geoserver_datastore_name=''))
             | ~Q(owner_id=root.owner_id)
         )
-        in_use_ids = adapt_files.filter(in_use).values('pk')
+        # Listed once: as a subquery, PostgreSQL ran it again for every row of every chunk, which on
+        # 1.4 million rows took minutes per chunk of 1000. Rows in use are few.
+        in_use_ids = list(adapt_files.filter(in_use).values_list('pk', flat=True).distinct())
         kept = adapt_files.filter(pk__in=in_use_ids)
         unused = adapt_files.exclude(pk__in=in_use_ids)
         self._refuse_strays(doomed_folders)
@@ -87,14 +89,23 @@ class Command(BaseCommand):
         self.stdout.write(f'Kept {plural(kept_count, "file row")} in use ({reasons}) '
                           f'and cleared the folder on {cleared} of them.')
 
-        deleted_files = 0
+        deleted_files, last = 0, None
         while True:
-            chunk = list(unused.values_list('pk', flat=True)[:BATCH])
+            # In primary key order from where the last chunk ended, so each chunk is a short index read.
+            todo = unused.order_by('pk')
+            if last is not None:
+                todo = todo.filter(pk__gt=last)
+            chunk = list(todo.values_list('pk', flat=True)[:BATCH])
             if not chunk:
                 break
-            # Filtering the unused set again spares a row that came into use meanwhile.
-            _, per_model = unused.filter(pk__in=chunk).delete()
+            last = chunk[-1]
+            # Checking the chunk again spares a row that came into use meanwhile.
+            now_in_use = set(File.objects.filter(pk__in=chunk).filter(in_use).values_list('pk', flat=True))
+            _, per_model = File.objects.filter(pk__in=[pk for pk in chunk if pk not in now_in_use]).delete()
             deleted_files += per_model.get(File._meta.label, 0)
+            if deleted_files and deleted_files % 50000 < BATCH:
+                self.stdout.write(f'  ... {deleted_files:,} file rows deleted so far', ending='\n')
+                self.stdout.flush()
         self.stdout.write(f'Deleted {plural(deleted_files, "file row")} that nothing used.')
 
         # Leaves first, so no delete cascades into a subtree beyond its chunk.
